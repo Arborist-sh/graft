@@ -1,0 +1,17 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Graft runtime state & secrets (never commit)
+.graft/
+*.pem
+config.local.json
