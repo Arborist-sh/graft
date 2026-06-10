@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Graft LaunchDaemon template.
+
+  Install on a headless runner host:
+    1. Build + install the binary:   sudo cp .build/release/graft /usr/local/bin/graft
+    2. Place your config:            sudo mkdir -p /etc/graft && sudo cp config.json /etc/graft/
+    3. Import the App key into the SYSTEM keychain (no login session at boot):
+         sudo graft secrets import --app-id <ID> --pem app.pem --system
+       and set  "secrets": { "scope": "system" }  in the config.
+    4. Install + load the daemon:
+         sudo cp com.graft.runner.plist /Library/LaunchDaemons/
+         sudo launchctl load -w /Library/LaunchDaemons/com.graft.runner.plist
+
+  Logs: /var/log/graft.log   ·   Stop: sudo launchctl unload /Library/LaunchDaemons/com.graft.runner.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.graft.runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/graft</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/etc/graft/config.json</string>
+        <string>--daemon</string>
+    </array>
+
+    <!-- Start at boot and keep it alive across crashes. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- The host user that owns the Tart VMs. Tart needs a real user context. -->
+    <key>UserName</key>
+    <string>CHANGE_ME</string>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/graft.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/graft.log</string>
+
+    <!-- Tart lives in Homebrew's bin; make sure it's on PATH. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

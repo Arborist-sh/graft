@@ -1,0 +1,173 @@
+import Foundation
+
+/// Supplies a JIT runner config for a pool. `GitHubAppClient` is the production
+/// conformer; tests inject a mock. Keeps the supervisor off the network.
+public protocol JITConfigProvider: Sendable {
+    func generateJITConfig(pool: PoolConfig, runnerName: String) async throws -> String
+}
+
+/// Runs the ephemeral runner in a VM and returns its exit code.
+/// `RunnerProvisioner` is the production conformer.
+public protocol RunnerRunner: Sendable {
+    func runEphemeralRunner(on vm: RunningVM, jitConfig: String) async throws -> Int32
+}
+
+extension GitHubAppClient: JITConfigProvider {}
+extension RunnerProvisioner: RunnerRunner {}
+
+/// The desired-state loop. Keeps each pool filled to its runner count, respecting
+/// the host's per-OS capacity (Apple's 2-macOS-VM limit, budgeted across pools).
+/// Each slot runs the full ephemeral loop forever: acquire → JIT → run one job →
+/// release → repeat. Runs until the task is cancelled (graceful shutdown).
+public actor PoolSupervisor {
+    private let config: GraftConfig
+    private let provider: any VMProvider
+    private let github: @Sendable (Int) -> any JITConfigProvider
+    private let runner: any RunnerRunner
+    private let state: StateManager
+    private var runners: [String: RunnerRecord] = [:]
+
+    /// `github` is a factory keyed by App ID — different pools can use different
+    /// GitHub Apps (personal vs. work), each with its own client.
+    public init(
+        config: GraftConfig,
+        provider: any VMProvider,
+        github: @escaping @Sendable (Int) -> any JITConfigProvider,
+        runner: any RunnerRunner,
+        state: StateManager = StateManager()
+    ) {
+        self.config = config
+        self.provider = provider
+        self.github = github
+        self.runner = runner
+        self.state = state
+    }
+
+    /// Convenience for the production path: GitHub App clients backed by `secrets`,
+    /// runner via the provider's exec channel.
+    public init(
+        config: GraftConfig,
+        provider: any VMProvider,
+        secrets: any SecretStore,
+        state: StateManager = StateManager()
+    ) {
+        self.init(
+            config: config,
+            provider: provider,
+            github: { appID in GitHubAppClient(appID: appID, secrets: secrets) },
+            runner: RunnerProvisioner(provider: provider),
+            state: state
+        )
+    }
+
+    public func run() async {
+        await reconcile()
+
+        await withTaskGroup(of: Void.self) { group in
+            // Budget capacity per OS across ALL pools — two macOS pools can't each
+            // grab 2 VMs on a 2-VM host.
+            var budget: [GuestOS: Int] = [:]
+            for os in GuestOS.allCases { budget[os] = await provider.capacity(for: os) }
+
+            for pool in config.pools {
+                let want = pool.count
+                let available = budget[pool.os] ?? 0
+                let slots = max(0, min(want, available))
+                budget[pool.os] = available - slots
+
+                if slots < want {
+                    Log.warn("pool '\(pool.name)': clamped \(want) → \(slots) (host \(pool.os.rawValue) capacity)")
+                }
+                Log.info("pool '\(pool.name)': \(slots) runner slot(s)")
+                for slot in 0..<slots {
+                    group.addTask { await self.runSlot(pool: pool, index: slot) }
+                }
+            }
+            await group.waitForAll()
+        }
+
+        await cleanup()
+    }
+
+    // MARK: One runner slot
+
+    private func runSlot(pool: PoolConfig, index: Int) async {
+        let github = github(pool.github.appId)
+        let tag = "\(pool.name)#\(index)"
+
+        while !Task.isCancelled {
+            do {
+                let vm = try await provider.acquire(image: pool.image, os: pool.os)
+                track(vm, pool: pool.name)
+                Log.info("[\(tag)] acquired \(vm.name) (\(vm.ip))")
+
+                do {
+                    let jitConfig = try await github.generateJITConfig(pool: pool, runnerName: vm.name)
+                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jitConfig)
+                    Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
+                } catch {
+                    Log.warn("[\(tag)] runner \(vm.name) failed: \(error)")
+                }
+
+                untrack(vm.name)
+                try? await provider.release(vm)
+            } catch {
+                if Task.isCancelled { break }
+                Log.warn("[\(tag)] acquire failed: \(error) — retrying in 5s")
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    // MARK: Tracking + persistence
+
+    private func track(_ vm: RunningVM, pool: String) {
+        runners[vm.name] = RunnerRecord(vm: vm, pool: pool, startedAt: Date())
+        persist()
+    }
+
+    private func untrack(_ name: String) {
+        runners[name] = nil
+        persist()
+    }
+
+    private func persist() {
+        do {
+            try state.save(PoolState(runners: Array(runners.values), updatedAt: Date()))
+        } catch {
+            Log.warn("state save failed: \(error)")
+        }
+    }
+
+    // MARK: Lifecycle
+
+    /// Destroy leftovers from a prior run. With `tart exec`, the watching process
+    /// died with us, so any surviving graft VM is a dead-runner husk — clean slate,
+    /// then fill fresh. (Reattach isn't meaningful without a live exec channel.)
+    private func reconcile() async {
+        for record in state.load()?.runners ?? [] {
+            Log.info("reconcile: releasing leftover \(record.vm.name)")
+            try? await provider.release(record.vm)
+        }
+        // Sweep any graft-* VMs that never made it into state (crash before persist).
+        if let tart = provider as? LocalTartProvider {
+            for vm in (try? await tart.graftManagedVMs()) ?? [] {
+                Log.info("reconcile: sweeping orphan \(vm.name)")
+                try? await Tart.stop(name: vm.name)
+                try? await Tart.delete(name: vm.name)
+            }
+        }
+        runners.removeAll()
+        persist()
+    }
+
+    private func cleanup() async {
+        for record in runners.values {
+            Log.info("shutdown: releasing \(record.vm.name)")
+            try? await provider.release(record.vm)
+        }
+        runners.removeAll()
+        persist()
+        Log.info("graft stopped")
+    }
+}

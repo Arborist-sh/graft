@@ -1,5 +1,12 @@
 import Foundation
 
+/// Escape hatch for passing a non-`Sendable` reference (e.g. `Process`) into a
+/// cancellation handler. Safe here: we only call thread-safe methods on it.
+struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
 /// Result of a finished subprocess.
 public struct ShellResult: Sendable {
     public let exitCode: Int32
@@ -104,20 +111,27 @@ public enum Shell {
         let inputPipe = Pipe()
         if stdin != nil { process.standardInput = inputPipe }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Set before run() so we never miss a fast-exiting process.
-            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
-            do {
-                try process.run()
-                if let stdin {
-                    let handle = inputPipe.fileHandleForWriting
-                    handle.write(Data(stdin.utf8))
-                    try? handle.close()
+        // On task cancellation (graceful shutdown), terminate the process so a
+        // blocked runner stops and the slot can release its VM.
+        let box = UncheckedSendableBox(process)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Set before run() so we never miss a fast-exiting process.
+                process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+                do {
+                    try process.run()
+                    if let stdin {
+                        let handle = inputPipe.fileHandleForWriting
+                        handle.write(Data(stdin.utf8))
+                        try? handle.close()
+                    }
+                } catch {
+                    process.terminationHandler = nil
+                    continuation.resume(throwing: error)
                 }
-            } catch {
-                process.terminationHandler = nil
-                continuation.resume(throwing: error)
             }
+        } onCancel: {
+            if box.value.isRunning { box.value.terminate() }
         }
     }
 
