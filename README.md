@@ -115,7 +115,9 @@ graft status                   # daemon liveness + live runner snapshot
 graft stop                     # graceful shutdown
 ```
 
-Headless via launchd: see [`Resources/com.graft.runner.plist`](Resources/com.graft.runner.plist).
+**Running headless / on an EC2 Mac?** Tart needs an active GUI login session — see
+[docs/ec2-mac-setup.md](docs/ec2-mac-setup.md) for the auto-login setup, verification
+steps, and security trade-offs.
 
 ## Commands
 
