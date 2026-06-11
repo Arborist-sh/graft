@@ -55,39 +55,114 @@ enum Prompt {
     }
 }
 
-/// Resolve a GitHub App ID interactively: pick from keys already in the keychain,
-/// or enter a new one — and if that App has no key yet, offer to import its PEM.
+/// Resolve a GitHub App ID interactively (pick from keys already in the keychain or
+/// enter a new one), then run the secrets step: ensure that App has a private key —
+/// importing one if it's missing, or offering to rotate it if it's already there.
 enum AppPicker {
     static func resolve(scope: KeychainScope) throws -> Int {
         let store = KeychainSecretStore(scope: scope)
         let existing = (try? store.storedAppIDs()) ?? []   // attribute read — no Keychain prompt
 
+        let appID: Int
         if existing.isEmpty {
-            printErr("(no App keys in the \(scope.rawValue) keychain yet)")
-            return try enterNew(store: store, scope: scope)
+            printErr("(no GitHub App keys in the \(scope.rawValue) keychain yet)")
+            appID = Prompt.positiveInt("GitHub App ID")
+        } else {
+            var options = existing.map { "app \($0)" }
+            options.append("enter a different App ID…")
+            let choice = Prompt.choose("Which GitHub App?", options)
+            appID = choice < existing.count ? existing[choice] : Prompt.positiveInt("GitHub App ID")
         }
 
-        var options = existing.map { "app \($0)" }
-        options.append("enter a different App ID…")
-        let choice = Prompt.choose("Which GitHub App?", options)
-        if choice < existing.count { return existing[choice] }
-        return try enterNew(store: store, scope: scope)
+        try ensureKey(appID: appID, store: store, scope: scope)
+        return appID
     }
 
-    private static func enterNew(store: KeychainSecretStore, scope: KeychainScope) throws -> Int {
-        let appID = Prompt.positiveInt("GitHub App ID")
+    /// The wizard's secrets step. Always runs, so key import is a visible part of
+    /// setup rather than a hidden branch: import if missing, offer rotate if present.
+    private static func ensureKey(appID: Int, store: KeychainSecretStore, scope: KeychainScope) throws {
         let hasKey = ((try? store.storedAppIDs()) ?? []).contains(appID)
-        if !hasKey, Prompt.confirm("No key stored for app \(appID). Import a .pem now?", default: true) {
-            let path = (Prompt.required("Path to the App private-key .pem") as NSString).expandingTildeInPath
-            guard let pem = try? String(contentsOfFile: path, encoding: .utf8) else {
-                throw GraftError("can't read PEM at \(path)")
+        if hasKey {
+            printErr("✓ private key already stored for app \(appID) (\(scope.rawValue) keychain)")
+            guard Prompt.confirm("Import a new .pem for app \(appID) (rotate the key)?", default: false) else { return }
+        } else {
+            printErr("No private key stored for app \(appID) yet.")
+            guard Prompt.confirm("Import its .pem now?", default: true) else {
+                printErr("  ⚠ skipped — `graft run` will fail until you import it:")
+                let flag = scope == .system ? " --system" : ""
+                printErr("    graft secrets import --app-id \(appID) --pem <path>\(flag)")
+                return
             }
-            try PrivateKeyValidator.validate(pem: pem)
-            try store.store(pem: pem, forAppID: appID)
-            printErr("✓ stored key for app \(appID) in the \(scope.rawValue) keychain")
-            printErr("  shred the file:  rm -P \(path)")
         }
-        return appID
+        try importPEM(appID: appID, store: store, scope: scope)
+    }
+
+    private static func importPEM(appID: Int, store: KeychainSecretStore, scope: KeychainScope) throws {
+        let path = (Prompt.required("Path to the App private-key .pem") as NSString).expandingTildeInPath
+        guard let pem = try? String(contentsOfFile: path, encoding: .utf8) else {
+            throw GraftError("can't read PEM at \(path)")
+        }
+        try PrivateKeyValidator.validate(pem: pem)
+        try store.store(pem: pem, forAppID: appID)
+        printErr("✓ stored key for app \(appID) in the \(scope.rawValue) keychain")
+        printErr("  shred the file:  rm -P \(path)")
+    }
+}
+
+/// Pick a GitHub target (`org:NAME` / `repo:OWNER/NAME`) from what the App can
+/// actually reach — its installations' orgs and repos — merged with targets already
+/// configured locally, so you select instead of retyping. Falls back to free text.
+enum TargetPicker {
+    static func resolve(appID: Int, scope: KeychainScope) async -> String {
+        let prompt = "Target (org:NAME or repo:OWNER/NAME)"
+        var known = knownFromConfig()
+
+        // Best-effort, time-bounded: ask GitHub what this App can reach. Network or
+        // key-read failures just fall through to config-known + free text.
+        let client = GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: scope))
+        if let fromAPI = try? await withTimeout(seconds: 6, { try await client.accessibleTargets() }) {
+            known = dedupe(fromAPI + known)
+        } else if known.isEmpty {
+            printErr("(couldn't reach GitHub for the target list — type it below)")
+        }
+
+        guard !known.isEmpty else { return Prompt.required(prompt) }
+        var options = known
+        options.append("enter a custom target…")
+        let choice = Prompt.choose("Which target?", options)
+        return choice < known.count ? known[choice] : Prompt.required(prompt)
+    }
+
+    /// Distinct targets already used by any pool in any local profile.
+    private static func knownFromConfig() -> [String] {
+        var out: [String] = []
+        for name in Profiles.names() {
+            guard let cfg = try? Profiles.load(name) else { continue }
+            out.append(contentsOf: cfg.pools.map { $0.github.target })
+        }
+        return dedupe(out)
+    }
+
+    private static func dedupe(_ items: [String]) -> [String] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0).inserted }
+    }
+}
+
+/// Run `operation`, but give up after `seconds` (e.g. a wizard network call that
+/// shouldn't hang the prompt on a bad connection). Cancels the operation on timeout.
+func withTimeout<T: Sendable>(
+    seconds: Double,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw GraftError("timed out after \(seconds)s")
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
     }
 }
 
@@ -131,7 +206,7 @@ enum Wizard {
         let image = await ImagePicker.resolve()
         let count = Prompt.int("How many runners?", default: os == .macOS ? 2 : 4)
         let appID = try AppPicker.resolve(scope: scope)
-        let target = Prompt.required("Target (org:NAME or repo:OWNER/NAME)")
+        let target = await TargetPicker.resolve(appID: appID, scope: scope)
         let labelsRaw = Prompt.line("Labels (comma-separated; blank = default)", default: "")
         let labels = labelsRaw.isEmpty
             ? nil

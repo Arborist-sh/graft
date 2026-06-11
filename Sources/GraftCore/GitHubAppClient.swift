@@ -75,6 +75,58 @@ public struct GitHubAppClient: Sendable {
         _ = try await request("DELETE", path: "\(target.apiPath)/actions/runners/\(id)", bearer: token)
     }
 
+    /// Targets this App can actually reach: `org:<login>` for every org the App is
+    /// installed on, plus `repo:<owner>/<name>` for every accessible repo. Powers the
+    /// setup wizard's target picker so you select a valid target instead of retyping.
+    public func accessibleTargets() async throws -> [String] {
+        let jwt = try await appJWT()
+        struct Installation: Decodable {
+            let id: Int
+            let account: Account
+            struct Account: Decodable { let login: String; let type: String }
+        }
+        let instData = try await request("GET", path: "app/installations", bearer: jwt)
+        let installations = try Self.snakeDecoder.decode([Installation].self, from: instData)
+
+        var targets: [String] = []
+        for inst in installations {
+            if inst.account.type == "Organization" {
+                targets.append("org:\(inst.account.login)")
+            }
+            // Repos need an installation token (the App JWT can't read them directly).
+            guard let token = try? await installationToken(installationID: inst.id),
+                  let repoData = try? await request("GET", path: "installation/repositories", bearer: token)
+            else { continue }
+            struct Repos: Decodable {
+                let repositories: [Repo]
+                struct Repo: Decodable { let fullName: String }
+            }
+            let repos = (try? Self.snakeDecoder.decode(Repos.self, from: repoData))?.repositories ?? []
+            targets.append(contentsOf: repos.map { "repo:\($0.fullName)" })
+        }
+        return targets
+    }
+
+    /// Mint an installation token straight from an installation id (the
+    /// `accessibleTargets` path already has the id, so it skips target→id lookup).
+    private func installationToken(installationID: Int) async throws -> String {
+        let jwt = try await appJWT()
+        struct TokenResponse: Decodable { let token: String }
+        let data = try await request(
+            "POST",
+            path: "app/installations/\(installationID)/access_tokens",
+            bearer: jwt,
+            json: [:]
+        )
+        return try JSONDecoder().decode(TokenResponse.self, from: data).token
+    }
+
+    private static let snakeDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
+
     // MARK: Auth chain (each step public so `graft doctor` can report it)
 
     /// Read the PEM from the secret store and sign the App JWT.
