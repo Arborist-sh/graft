@@ -8,7 +8,10 @@ struct Graft: AsyncParsableCommand {
         commandName: "graft",
         abstract: "Ephemeral GitHub Actions runners on Tart VMs.",
         version: "0.0.1",
-        subcommands: [Run.self, Status.self, Stop.self, Doctor.self, VM.self, ConfigCommand.self, Secrets.self]
+        subcommands: [
+            Init.self, Run.self, Status.self, Stop.self, Doctor.self,
+            Profile.self, Pool.self, VM.self, ConfigCommand.self, Secrets.self,
+        ]
     )
 }
 

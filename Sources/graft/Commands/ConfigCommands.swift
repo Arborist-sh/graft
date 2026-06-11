@@ -14,14 +14,17 @@ extension ConfigCommand {
     struct Validate: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Check that a config is well-formed.")
 
-        @Option(name: .shortAndLong, help: "Config path (default: $GRAFT_CONFIG or ~/.graft/config.json).")
+        @Option(name: .shortAndLong, help: "Config path (overrides profile resolution).")
         var config: String?
+
+        @Option(name: .long, help: "Profile to validate (default: active profile).")
+        var profile: String?
 
         @Flag(help: "Skip checking that App private keys are present in the Keychain.")
         var skipKeys = false
 
         func run() async throws {
-            let path = GraftConfig.resolvePath(explicit: config)
+            let path = GraftConfig.resolvePath(explicit: config, profile: profile)
             let cfg = try GraftConfig.load(from: path)
 
             // Structural problems are fatal.

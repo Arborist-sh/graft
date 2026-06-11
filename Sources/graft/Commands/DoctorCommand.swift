@@ -27,7 +27,10 @@ struct Doctor: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Check pools from this config file instead of the keychain.")
     var config: String?
 
-    @Option(name: .long, help: "With --config, only check this pool.")
+    @Option(name: .long, help: "Check pools from this profile instead of the keychain.")
+    var profile: String?
+
+    @Option(name: .long, help: "With --config/--profile, only check this pool.")
     var pool: String?
 
     @Flag(help: "Use the system keychain instead of login.")
@@ -40,9 +43,9 @@ struct Doctor: AsyncParsableCommand {
         let pools: [PoolConfig]
         let scope: KeychainScope
 
-        if config != nil || pool != nil {
-            // Config mode.
-            let path = GraftConfig.resolvePath(explicit: config)
+        if config != nil || profile != nil || pool != nil {
+            // Config/profile mode.
+            let path = GraftConfig.resolvePath(explicit: config, profile: profile)
             let cfg = try GraftConfig.load(from: path)
             let filtered = pool.map { name in cfg.pools.filter { $0.name == name } } ?? cfg.pools
             guard !filtered.isEmpty else {

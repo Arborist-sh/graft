@@ -10,8 +10,11 @@ struct Run: AsyncParsableCommand {
         abstract: "Start the pool supervisor (runs until stopped)."
     )
 
-    @Option(name: .shortAndLong, help: "Config path (default: $GRAFT_CONFIG or ~/.graft/config.json).")
+    @Option(name: .shortAndLong, help: "Config path (overrides profile resolution).")
     var config: String?
+
+    @Option(name: .long, help: "Profile to run (default: active profile).")
+    var profile: String?
 
     @Flag(help: "Daemon mode for launchd. launchd does the supervising — this just notes intent.")
     var daemon = false
@@ -20,7 +23,7 @@ struct Run: AsyncParsableCommand {
     var orchardURL: String?
 
     func run() async throws {
-        let path = GraftConfig.resolvePath(explicit: config)
+        let path = GraftConfig.resolvePath(explicit: config, profile: profile)
         let cfg = try GraftConfig.load(from: path)
 
         let problems = cfg.validate()

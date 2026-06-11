@@ -143,11 +143,25 @@ extension GraftConfig {
             .appendingPathComponent(".graft/config.json")
     }
 
-    /// `--config` flag wins, then `$GRAFT_CONFIG`, then the default path.
-    public static func resolvePath(explicit: String?) -> String {
+    /// Resolution order: explicit `--config` → `$GRAFT_CONFIG` → `--profile` →
+    /// the active profile → `~/.graft/config.json`.
+    public static func resolvePath(explicit: String? = nil, profile: String? = nil) -> String {
         if let explicit { return explicit }
         if let env = ProcessInfo.processInfo.environment["GRAFT_CONFIG"], !env.isEmpty { return env }
+        if let profile { return Profiles.path(for: profile) }
+        if let active = Profiles.activeName() { return Profiles.path(for: active) }
         return defaultPath
+    }
+
+    /// Shared pretty/sorted encoder for writing configs and profiles.
+    public static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }()
+
+    public func jsonString() throws -> String {
+        String(decoding: try Self.encoder.encode(self), as: UTF8.self)
     }
 
     public static func load(from path: String) throws -> GraftConfig {
