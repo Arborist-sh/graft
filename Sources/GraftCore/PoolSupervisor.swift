@@ -20,6 +20,7 @@ extension RunnerProvisioner: RunnerRunner {}
 /// so a live UI (the `graft run` spinner dashboard) can show per-slot progress.
 public enum RunnerPhase: Sendable {
     case acquiring          // cloning + booting the VM
+    case provisioning       // VM booted; registering the JIT runner with GitHub
     case running            // runner is up; jobs flow through it
     case deregistering      // removing the JIT runner from GitHub
     case stopping           // stopping + deleting the VM
@@ -29,6 +30,7 @@ public enum RunnerPhase: Sendable {
     public var label: String {
         switch self {
         case .acquiring: return "booting VM"
+        case .provisioning: return "registering runner"
         case .running: return "running"
         case .deregistering: return "deregistering runner"
         case .stopping: return "stopping VM"
@@ -149,9 +151,10 @@ public actor PoolSupervisor {
 
                 var runnerID: Int?
                 do {
-                    report(.running, vm.name)
+                    report(.provisioning, vm.name)
                     let jit = try await github.generateJITRunner(pool: pool, runnerName: vm.name)
                     runnerID = jit.runnerID
+                    report(.running, vm.name)
                     let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig)
                     Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
                 } catch is CancellationError {

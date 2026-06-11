@@ -44,10 +44,12 @@ final class LiveDashboard: @unchecked Sendable {
         loop?.cancel()
         lock.lock()
         running = false
-        var output = eraseLiveRegion()
-        output += flushPendingLogs()
+        var output = moveToBlockStart()
+        output += "\u{1B}[0J"                        // clear the live rows
+        output += flushPendingLogs()                 // emit any trailing logs
         order.removeAll(); rows.removeAll(); prevLineCount = 0
         output += "\u{1B}[?25h"                      // show cursor
+        if !output.hasSuffix("\n") { output += "\n" } // leave the prompt on a clean line
         Self.out.write(Data(output.utf8))
         lock.unlock()
     }
@@ -76,27 +78,37 @@ final class LiveDashboard: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard running else { return }
 
-        var output = eraseLiveRegion()
+        // 1. Go to the top of the current live block and wipe it (+ anything below).
+        var output = moveToBlockStart()
+        if prevLineCount > 0 { output += "\u{1B}[0J" }
+        // 2. Flush log lines — they end in \n, so they scroll into permanent history
+        //    above the block.
         output += flushPendingLogs()
-
+        // 3. Redraw the rows joined by \n with NO trailing newline, so the cursor
+        //    rests on the last row and the terminal never scrolls (which is what
+        //    corrupted the in-place redraw).
         let frame = Self.frames[tick % Self.frames.count]
-        var lines = 0
+        var rowStrings: [String] = []
         for tag in order {
             guard let row = rows[tag] else { continue }
             let label = tag.padding(toLength: 6, withPad: " ", startingAt: 0)
             let vm = Self.shortVM(row.vm)
             let gap = vm.isEmpty ? "" : "  \(vm)"
-            output += "  \(frame) \(label)\(gap)  \(row.phase.label)\n"
-            lines += 1
+            rowStrings.append("  \(frame) \(label)\(gap)  \(row.phase.label)")
         }
-        prevLineCount = lines
+        prevLineCount = rowStrings.count
+        output += rowStrings.joined(separator: "\n")
         tick += 1
         Self.out.write(Data(output.utf8))
     }
 
-    /// Cursor to the top of the live block and clear everything below it.
-    private func eraseLiveRegion() -> String {
-        prevLineCount > 0 ? "\u{1B}[\(prevLineCount)F\u{1B}[0J" : ""
+    /// Cursor to column 0 of the first live row (we never leave a trailing newline,
+    /// so the cursor sits at the end of the last row between renders).
+    private func moveToBlockStart() -> String {
+        guard prevLineCount > 0 else { return "" }
+        var s = "\r"
+        if prevLineCount > 1 { s += "\u{1B}[\(prevLineCount - 1)A" }
+        return s
     }
 
     private func flushPendingLogs() -> String {
