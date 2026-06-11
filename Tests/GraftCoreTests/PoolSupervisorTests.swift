@@ -24,6 +24,9 @@ private actor Recorder {
         inFlight[name] = (inFlight[name] ?? 1) - 1
         released.append(name)
     }
+
+    private(set) var deregisteredRunnerIDs: [Int] = []
+    func deregister(_ id: Int) { deregisteredRunnerIDs.append(id) }
 }
 
 private struct MockProvider: VMProvider {
@@ -52,8 +55,13 @@ private struct MockProvider: VMProvider {
 }
 
 private struct MockJIT: JITConfigProvider {
-    func generateJITConfig(pool: PoolConfig, runnerName: String) async throws -> String {
-        "jit-\(runnerName)"
+    let recorder: Recorder
+    func generateJITRunner(pool: PoolConfig, runnerName: String) async throws -> GitHubAppClient.JITRunner {
+        // Stable per-name id so the deregister assertion is deterministic.
+        GitHubAppClient.JITRunner(runnerID: abs(runnerName.hashValue % 1_000_000), encodedConfig: "jit-\(runnerName)")
+    }
+    func deleteRunner(id: Int, target: GitHubTarget) async throws {
+        await recorder.deregister(id)
     }
 }
 
@@ -95,7 +103,7 @@ struct PoolSupervisorTests {
         let supervisor = PoolSupervisor(
             config: cfg,
             provider: provider,
-            github: { _ in MockJIT() },
+            github: { _ in MockJIT(recorder: recorder) },
             runner: BlockingRunner(),
             state: StateManager(directory: stateDir)
         )
@@ -121,6 +129,10 @@ struct PoolSupervisorTests {
         // (that collision is what hangs `tart` on its per-VM lock). Regression guard
         // for the `releaseOnce` de-dupe.
         #expect(await recorder.maxConcurrentReleasePerName == 1)
+
+        // Every runner that ran is deregistered from GitHub on teardown, so no
+        // offline husk is left behind.
+        #expect(await recorder.deregisteredRunnerIDs.count == acquired.count)
 
         // State is cleaned up.
         let persisted = StateManager(directory: stateDir).load()

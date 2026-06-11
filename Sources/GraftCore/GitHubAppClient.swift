@@ -69,10 +69,33 @@ public struct GitHubAppClient: Sendable {
         try await generateJITRunner(pool: pool, runnerName: runnerName).encodedConfig
     }
 
-    /// Remove a runner by id (cleanup for offline/probe runners).
+    /// Remove a runner by id (cleanup for offline/probe runners). A runner GitHub has
+    /// already auto-removed (a completed ephemeral job) yields a 404 — callers that
+    /// just want it gone can ignore that.
     public func deleteRunner(id: Int, target: GitHubTarget) async throws {
         let token = try await installationAccessToken(for: target)
         _ = try await request("DELETE", path: "\(target.apiPath)/actions/runners/\(id)", bearer: token)
+    }
+
+    /// One self-hosted runner as GitHub reports it.
+    public struct Runner: Sendable, Decodable {
+        public let id: Int
+        public let name: String
+        public let status: String   // "online" | "offline"
+        public var isOffline: Bool { status.lowercased() == "offline" }
+    }
+
+    /// Runners registered on `target` (first 100 — graft husks rarely exceed that).
+    /// Backs `graft runners list/prune`.
+    public func listRunners(target: GitHubTarget) async throws -> [Runner] {
+        let token = try await installationAccessToken(for: target)
+        let data = try await request(
+            "GET",
+            path: "\(target.apiPath)/actions/runners?per_page=100",
+            bearer: token
+        )
+        struct Response: Decodable { let runners: [Runner] }
+        return try Self.snakeDecoder.decode(Response.self, from: data).runners
     }
 
     /// Targets this App can actually reach: `org:<login>` for every org the App is
@@ -169,7 +192,13 @@ public struct GitHubAppClient: Sendable {
         bearer: String,
         json: [String: Any]? = nil
     ) async throws -> Data {
-        var req = URLRequest(url: apiBase.appendingPathComponent(path))
+        // String-join rather than appendingPathComponent so a `?query` survives
+        // (appendingPathComponent percent-encodes the `?`). Paths are API-internal
+        // and contain no characters needing escaping.
+        guard let url = URL(string: apiBase.absoluteString + "/" + path) else {
+            throw GraftError("bad request path: \(path)")
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")

@@ -140,6 +140,8 @@ graft vm create <image> [--os macos|linux]   Clone + boot a VM, print name<TAB>i
 graft vm delete <name>                  Stop + destroy a VM
 graft vm list [--all]                   List graft-managed (or all) VMs
 graft vm ip <name> [--wait]             Print a VM's IP
+graft runners list [--profile NAME]     List graft's runner registrations on GitHub
+graft runners prune [--profile NAME]    Delete offline graft runner husks on GitHub
 graft secrets import --app-id N --pem P [--system]
 graft secrets list [--system]
 graft secrets rm --app-id N [--system]

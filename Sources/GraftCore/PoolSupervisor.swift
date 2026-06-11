@@ -1,9 +1,10 @@
 import Foundation
 
-/// Supplies a JIT runner config for a pool. `GitHubAppClient` is the production
-/// conformer; tests inject a mock. Keeps the supervisor off the network.
+/// Registers and deregisters JIT runners for a pool. `GitHubAppClient` is the
+/// production conformer; tests inject a mock. Keeps the supervisor off the network.
 public protocol JITConfigProvider: Sendable {
-    func generateJITConfig(pool: PoolConfig, runnerName: String) async throws -> String
+    func generateJITRunner(pool: PoolConfig, runnerName: String) async throws -> GitHubAppClient.JITRunner
+    func deleteRunner(id: Int, target: GitHubTarget) async throws
 }
 
 /// Runs the ephemeral runner in a VM and returns its exit code.
@@ -113,12 +114,21 @@ public actor PoolSupervisor {
                 track(vm, pool: pool.name)
                 Log.info("[\(tag)] acquired \(vm.name) (\(vm.ip))")
 
+                var runnerID: Int?
                 do {
-                    let jitConfig = try await github.generateJITConfig(pool: pool, runnerName: vm.name)
-                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jitConfig)
+                    let jit = try await github.generateJITRunner(pool: pool, runnerName: vm.name)
+                    runnerID = jit.runnerID
+                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig)
                     Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
                 } catch {
                     Log.warn("[\(tag)] runner \(vm.name) failed: \(error)")
+                }
+
+                // Deregister from GitHub so a runner that never ran a job (e.g. killed
+                // on shutdown) doesn't linger as an offline husk. A completed job is
+                // already gone — deleteRunner 404s, which we ignore.
+                if let runnerID, let target = try? pool.github.parsedTarget() {
+                    try? await github.deleteRunner(id: runnerID, target: target)
                 }
 
                 await releaseOnce(vm)
