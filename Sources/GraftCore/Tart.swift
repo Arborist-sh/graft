@@ -28,9 +28,14 @@ public enum Tart {
     }
 
     /// Boot a VM detached so it outlives this process. Returns immediately —
-    /// the VM is up but won't have an IP yet; call `waitForIP`.
-    public static func run(name: String) throws {
-        try Shell.launchDetached("\(executable) run \(name) --no-graphics")
+    /// the VM is up but won't have an IP yet; call `waitForIP`. `mounts` become
+    /// `--dir` directory shares (single-quoted so paths with spaces are safe).
+    public static func run(name: String, mounts: [Mount] = []) throws {
+        var command = "\(executable) run \(name) --no-graphics"
+        for mount in mounts {
+            command += " --dir='\(mount.tartDirArg)'"
+        }
+        try Shell.launchDetached(command)
     }
 
     public static func stop(name: String) async throws {

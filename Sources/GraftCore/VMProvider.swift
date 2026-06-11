@@ -10,7 +10,8 @@ public protocol VMProvider: Sendable {
 
     /// Clone + boot a VM from `image`, wait for it to get an IP, and return it.
     /// `os` is declared by the caller (from pool config) — providers don't probe.
-    func acquire(image: String, os: GuestOS) async throws -> RunningVM
+    /// `mounts` are host directory shares passed to the VM at boot.
+    func acquire(image: String, os: GuestOS, mounts: [Mount]) async throws -> RunningVM
 
     /// Stop and destroy a VM. Idempotent where possible — releasing an
     /// already-gone VM should not throw.

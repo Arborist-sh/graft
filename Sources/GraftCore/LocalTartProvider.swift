@@ -28,11 +28,11 @@ public struct LocalTartProvider: VMProvider {
         }
     }
 
-    public func acquire(image: String, os: GuestOS) async throws -> RunningVM {
+    public func acquire(image: String, os: GuestOS, mounts: [Mount] = []) async throws -> RunningVM {
         let name = Self.namePrefix + UUID().uuidString.lowercased()
         try await Tart.clone(image: image, to: name)
         do {
-            try Tart.run(name: name)
+            try Tart.run(name: name, mounts: mounts)
             let ip = try await Tart.waitForIP(name: name)
             return RunningVM(name: name, ip: ip, os: os)
         } catch {

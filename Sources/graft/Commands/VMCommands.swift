@@ -26,7 +26,7 @@ extension VM {
         func run() async throws {
             let provider = LocalTartProvider()
             printErr("cloning \(image) and booting…")
-            let vm = try await provider.acquire(image: image, os: os)
+            let vm = try await provider.acquire(image: image, os: os, mounts: [])
             print("\(vm.name)\t\(vm.ip)")
         }
     }

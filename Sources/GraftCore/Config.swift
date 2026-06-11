@@ -83,13 +83,17 @@ public struct PoolConfig: Codable, Sendable {
     public var os: GuestOS
     public var count: Int
     public var github: GitHubConfig
+    /// Host directory shares mounted into each runner VM (e.g. read-only warm caches).
+    /// Absent (nil) → no mounts. See docs/images-and-caching.md for the strategy.
+    public var mounts: [Mount]?
 
-    public init(name: String, image: String, os: GuestOS, count: Int, github: GitHubConfig) {
+    public init(name: String, image: String, os: GuestOS, count: Int, github: GitHubConfig, mounts: [Mount]? = nil) {
         self.name = name
         self.image = image
         self.os = os
         self.count = count
         self.github = github
+        self.mounts = mounts
     }
 
     /// Labels for runners in this pool — explicit config or the computed default.
