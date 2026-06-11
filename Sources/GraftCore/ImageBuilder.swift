@@ -15,7 +15,9 @@ public struct ImageBuilder: Sendable {
     /// Build `recipe` into a local image named `recipe.name`. `onLine` receives the
     /// guest's build output live. A failure leaves any pre-existing image of that name
     /// untouched (the build happens on a throwaway clone first).
-    public func build(_ recipe: ImageRecipe, onLine: (@Sendable (String) -> Void)? = nil) async throws {
+    /// `scriptBody`, if given (the contents of the recipe's `script:` file), runs before
+    /// the inline `run` steps in the same guest shell.
+    public func build(_ recipe: ImageRecipe, scriptBody: String? = nil, onLine: (@Sendable (String) -> Void)? = nil) async throws {
         let temp = "graft-imgbuild-" + UUID().uuidString.prefix(8).lowercased()
         try await Tart.clone(image: recipe.from, to: temp)
         do {
@@ -23,8 +25,8 @@ public struct ImageBuilder: Sendable {
             let vm = RunningVM(name: temp, ip: "", os: recipe.guestOS)
             try await provider.waitForGuest(vm, timeout: .seconds(120))
 
-            if !recipe.run.isEmpty {
-                let exit = try await provider.execStreaming(on: vm, script: Self.script(recipe.run), onLine: onLine)
+            if let provisioning = Self.script(scriptBody: scriptBody, run: recipe.run) {
+                let exit = try await provider.execStreaming(on: vm, script: provisioning, onLine: onLine)
                 guard exit == 0 else { throw GraftError("image build step failed (exit \(exit))") }
             }
 
@@ -44,9 +46,15 @@ public struct ImageBuilder: Sendable {
         }
     }
 
-    /// Join steps into one bash script. `-e`/`pipefail` fail fast; `-u` is intentionally
-    /// omitted — arbitrary install scripts often reference unset vars.
-    private static func script(_ steps: [String]) -> String {
-        (["set -eo pipefail"] + steps).joined(separator: "\n")
+    /// Combine the optional script body + inline run steps into one guest script, or
+    /// nil if there's nothing to run. `-e`/`pipefail` fail fast; `-u` is omitted (a
+    /// supplied script can re-enable it). The script runs first, then the run steps.
+    private static func script(scriptBody: String?, run: [String]) -> String? {
+        var parts = ["set -eo pipefail"]
+        if let scriptBody, !scriptBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(scriptBody)
+        }
+        parts.append(contentsOf: run)
+        return parts.count > 1 ? parts.joined(separator: "\n") : nil
     }
 }

@@ -25,10 +25,23 @@ extension Image {
         func run() async throws {
             var recipe = try ImageRecipe.load(from: file)
             if let name {
-                recipe = ImageRecipe(name: name, from: recipe.from, run: recipe.run, mounts: recipe.mounts, os: recipe.os)
+                recipe = ImageRecipe(name: name, from: recipe.from, run: recipe.run, script: recipe.script, mounts: recipe.mounts, os: recipe.os)
             }
+
+            // Read the recipe's `script:` file, resolved relative to the recipe's dir.
+            var scriptBody: String?
+            if let scriptRef = recipe.script {
+                let recipeDir = ((file as NSString).expandingTildeInPath as NSString).deletingLastPathComponent
+                let raw = scriptRef.hasPrefix("/") ? scriptRef : (recipeDir as NSString).appendingPathComponent(scriptRef)
+                let path = (raw as NSString).expandingTildeInPath
+                guard let body = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    throw GraftError("can't read recipe script at \(path)")
+                }
+                scriptBody = body
+            }
+
             printErr("building image '\(recipe.name)' from \(recipe.from)…\n")
-            try await ImageBuilder().build(recipe) { line in
+            try await ImageBuilder().build(recipe, scriptBody: scriptBody) { line in
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
             printErr("\n✓ built '\(recipe.name)' — reference it in a pool's `image`, or `graft dev --image \(recipe.name)`")
