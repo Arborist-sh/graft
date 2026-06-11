@@ -42,8 +42,8 @@ struct Run: AsyncParsableCommand {
             secrets: KeychainSecretStore(scope: scope)
         )
 
-        try writePidfile()
-        defer { removePidfile() }
+        try Daemon.writePidfile()
+        defer { Daemon.removePidfile() }
 
         Log.info("graft starting — \(cfg.pools.count) pool(s), \(scope.rawValue) keychain\(daemon ? ", daemon" : "")")
         let task = Task { await supervisor.run() }
@@ -64,7 +64,7 @@ struct Status: AsyncParsableCommand {
     )
 
     func run() throws {
-        if let pid = readPid(), isAlive(pid) {
+        if let pid = Daemon.runningPID() {
             print("daemon:  running (pid \(pid))")
         } else {
             print("daemon:  not running")
@@ -90,7 +90,7 @@ struct Stop: AsyncParsableCommand {
     )
 
     func run() throws {
-        guard let pid = readPid(), isAlive(pid) else {
+        guard let pid = Daemon.runningPID() else {
             printErr("graft is not running")
             return
         }
@@ -102,31 +102,6 @@ struct Stop: AsyncParsableCommand {
 }
 
 // MARK: - Runtime helpers
-
-private func pidfileURL() -> URL {
-    StateManager.defaultDirectory.appendingPathComponent("graft.pid")
-}
-
-private func writePidfile() throws {
-    try FileManager.default.createDirectory(
-        at: StateManager.defaultDirectory,
-        withIntermediateDirectories: true
-    )
-    try String(getpid()).write(to: pidfileURL(), atomically: true, encoding: .utf8)
-}
-
-private func removePidfile() {
-    try? FileManager.default.removeItem(at: pidfileURL())
-}
-
-private func readPid() -> Int32? {
-    guard let contents = try? String(contentsOf: pidfileURL(), encoding: .utf8) else { return nil }
-    return Int32(contents.trimmingCharacters(in: .whitespacesAndNewlines))
-}
-
-private func isAlive(_ pid: Int32) -> Bool {
-    kill(pid, 0) == 0
-}
 
 private func age(_ date: Date) -> String {
     let seconds = Int(Date().timeIntervalSince(date))

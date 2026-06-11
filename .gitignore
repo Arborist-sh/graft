@@ -8,6 +8,9 @@ Package.resolved
 *.xcworkspace/xcuserdata/
 DerivedData/
 
+# XcodeGen generates the project from project.yml — don't commit it
+GraftBar.xcodeproj/
+
 # macOS
 .DS_Store
 
