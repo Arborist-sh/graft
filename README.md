@@ -138,7 +138,7 @@ graft pool add --name N --image I --app-id A --target T [--os] [--count] [--labe
 graft pool rm <name> [--profile NAME]
 graft pool list [--profile NAME]
 
-graft image build -f <recipe.json>      Build a golden image (toolchain + warm caches)
+graft image build -f <recipe.yml|json>  Build a golden image (toolchain + warm caches)
 graft image list / rm / push / pull / template     Manage images
 graft dev [--image N] [--ephemeral] [-- CMD]       Local dev VM with your repo mounted
 
@@ -168,7 +168,7 @@ runner. See **[docs/images-and-caching.md](docs/images-and-caching.md)** for rec
 the CoW caching strategy, and host-mount safety (read-only for shared caches).
 
 ```sh
-graft image build -f examples/images/rn-detox.json   # build a golden image
+graft image build -f examples/images/rn-detox.yml    # build a golden image (YAML or JSON)
 graft dev --image rn-detox                           # shell into it, $PWD mounted
 graft dev --image rn-detox -- npx detox test e2e/    # or run a command
 ```

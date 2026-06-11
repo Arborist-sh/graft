@@ -23,10 +23,41 @@ struct ImageRecipeTests {
         #expect(r.mounts?.first == Mount(name: "repo", source: "/x", readOnly: true))
     }
 
-    @Test("the starter template is valid and decodes")
+    @Test("loads a YAML recipe with a run: block scalar as one inline script")
+    func loadYAML() throws {
+        let yaml = """
+        name: rn-detox
+        from: base:latest
+        run: |
+          set -euo pipefail
+          echo step1
+          echo step2
+        """
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("recipe.yml")
+        try yaml.write(to: file, atomically: true, encoding: .utf8)
+
+        let r = try ImageRecipe.load(from: file.path)
+        #expect(r.name == "rn-detox")
+        #expect(r.from == "base:latest")
+        #expect(r.run.count == 1)                       // block scalar → one script string
+        #expect(r.run[0].contains("echo step1"))
+        #expect(r.run[0].contains("echo step2"))
+    }
+
+    @Test("the starter template is valid YAML that loads")
     func template() throws {
-        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(ImageRecipe.template().utf8))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("template.yml")
+        try ImageRecipe.template().write(to: file, atomically: true, encoding: .utf8)
+
+        let r = try ImageRecipe.load(from: file.path)
         #expect(!r.name.isEmpty)
         #expect(!r.from.isEmpty)
+        #expect(r.run.count == 1)                       // template uses a run: | block
     }
 }

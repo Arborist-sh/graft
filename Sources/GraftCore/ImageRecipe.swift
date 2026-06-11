@@ -1,4 +1,5 @@
 import Foundation
+import Yams
 
 /// A declarative image build: clone `from`, run `run` steps in the guest, snapshot the
 /// result as a local image named `name`. JSON (no YAML dep). `mounts` expose host dirs
@@ -31,35 +32,47 @@ public struct ImageRecipe: Codable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
         from = try c.decode(String.self, forKey: .from)
-        run = try c.decodeIfPresent([String].self, forKey: .run) ?? []
+        // `run` may be a single block-scalar script (YAML `run: |`) or a list of steps.
+        if let single = try? c.decode(String.self, forKey: .run) {
+            run = [single]
+        } else {
+            run = try c.decodeIfPresent([String].self, forKey: .run) ?? []
+        }
         script = try c.decodeIfPresent(String.self, forKey: .script)
         mounts = try c.decodeIfPresent([Mount].self, forKey: .mounts)
         os = try c.decodeIfPresent(GuestOS.self, forKey: .os)
     }
 
+    /// Load a recipe from a `.yml`/`.yaml` (preferred — `run: |` can hold a whole
+    /// script) or `.json` file.
     public static func load(from path: String) throws -> ImageRecipe {
         let expanded = (path as NSString).expandingTildeInPath
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: expanded)) else {
             throw GraftError("can't read image recipe at \(expanded)")
         }
+        let isYAML = ["yml", "yaml"].contains((expanded as NSString).pathExtension.lowercased())
         do {
-            return try JSONDecoder().decode(ImageRecipe.self, from: data)
+            return isYAML
+                ? try YAMLDecoder().decode(ImageRecipe.self, from: data)
+                : try JSONDecoder().decode(ImageRecipe.self, from: data)
         } catch let error as DecodingError {
             throw GraftError("invalid image recipe at \(expanded): \(error.readableDescription)")
+        } catch {
+            throw GraftError("invalid image recipe at \(expanded): \(error)")
         }
     }
 
-    /// A starter recipe for `graft image template`.
+    /// A starter recipe for `graft image template` — YAML, so `run:` can hold a whole
+    /// inline script.
     public static func template() -> String {
         """
-        {
-          "name": "rn-detox",
-          "from": "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
-          "run": [
-            "brew install applesimutils",
-            "npm install -g detox-cli"
-          ]
-        }
+        name: rn-detox
+        from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest
+        run: |
+          set -euo pipefail
+          eval "$(fnm env)" && fnm install 20 && fnm default 20 && corepack enable
+          npm install -g detox-cli
+          sudo xcodebuild -runFirstLaunch
         """
     }
 }

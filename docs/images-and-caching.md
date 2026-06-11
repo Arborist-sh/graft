@@ -6,29 +6,30 @@ your runners means "works on my machine" stops being a thing.
 
 ## Build an image
 
-A recipe is JSON (`graft image template` prints a starter):
+A recipe is YAML or JSON (`graft image template` prints a starter). YAML is nicest
+because `run:` can be a `|` block holding a whole inline script:
 
-```json
-{
-  "name": "rn-detox",
-  "from": "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
-  "run": [
-    "brew install applesimutils",
-    "npm install -g detox-cli"
-  ]
-}
+```yaml
+name: rn-detox
+from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest
+run: |
+  set -euo pipefail
+  eval "$(fnm env)" && fnm install 20 && fnm default 20 && corepack enable
+  npm install -g detox-cli
+  sudo xcodebuild -runFirstLaunch
 ```
 
 ```sh
-graft image build -f image.json     # clone → boot → run steps in-guest → snapshot
+graft image build -f image.yml      # clone → boot → run the script in-guest → snapshot
 graft image list                    # local images + VMs
 graft image push rn-detox ghcr.io/you/rn-detox:latest   # share with the team
 ```
 
 `from` is any Tart ref (start from a `cirruslabs/*-xcode` base — Xcode + simulators are
-already baked). `run` steps execute in the guest; whatever they leave behind is baked
-into the image. `mounts` (optional) expose host dirs during the build, e.g. to warm a
-project's caches.
+already baked). `run` is a `|` block script or a list of steps; either runs in the
+guest, and whatever it leaves behind is baked into the image. `script:` points at an
+existing shell file instead. `mounts` (optional) expose host dirs during the build,
+e.g. to warm a project's caches.
 
 Reference the image from a pool (`"image": "rn-detox"`) or `graft dev --image
 rn-detox`.

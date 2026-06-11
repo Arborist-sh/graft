@@ -4,15 +4,17 @@ Starting points for `graft image build` — generic, meant to be adapted. Pin th
 versions to match your project's lockfiles ("works in CI, fails locally" is almost
 always version drift).
 
+Recipes can be **YAML** (preferred — `run: |` holds a whole inline script) or JSON.
+
 | Recipe | Base | For |
 |--------|------|-----|
-| [`rn-detox.json`](rn-detox.json) | `macos-sequoia-xcode` | React Native + Detox iOS e2e |
+| [`rn-detox.yml`](rn-detox.yml) | `macos-sequoia-xcode` | React Native + Detox iOS e2e |
 | [`ios-fastlane.json`](ios-fastlane.json) | `macos-sequoia-xcode` | iOS build/release with Fastlane |
 | [`node-ci.json`](node-ci.json) | `macos-sequoia-base` | Lean Node/TS CI (no Xcode) |
 | [`script-based/`](script-based/) | `macos-sequoia-xcode` | Point at an existing `provision.sh` |
 
 ```sh
-graft image build -f examples/images/rn-detox.json
+graft image build -f examples/images/rn-detox.yml
 graft dev --image rn-detox            # shell into it, your repo mounted
 ```
 
@@ -21,9 +23,9 @@ Notes:
 - The **`cirruslabs/*-xcode`** bases already ship Xcode, simulators, CocoaPods, `fnm`,
   `rbenv`, `gh`, `jq`, and more — so recipes mostly **pin versions** and add the few
   missing tools, rather than installing a toolchain from scratch.
-- **`run`** steps run in order in one guest shell (env carries across), or use
-  **`script`** to run an existing shell script (see `script-based/`). Whatever the
-  steps leave on disk is baked into the image.
+- **`run`** is either a YAML `|` block (a whole script) or a list of steps, run in one
+  guest shell (env carries across). Or use **`script:`** to point at an existing shell
+  file (see `script-based/`). Whatever the steps leave on disk is baked into the image.
 - For caching strategy (bake vs. mount, APFS copy-on-write, the read-only rule for
   shared caches), see [../../docs/images-and-caching.md](../../docs/images-and-caching.md).
 - Keep images that contain proprietary code **private** — don't `graft image push` them
