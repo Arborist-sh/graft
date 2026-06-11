@@ -18,6 +18,19 @@ targets:
     dependencies:
       - package: GraftPackage
         product: GraftCore
+    postBuildScripts:
+      - name: Stamp git commit into Info.plist
+        basedOnDependencyAnalysis: false
+        script: |
+          # Stamp the short commit hash into the (signing happens after this phase,
+          # so the modified plist stays valid). Empty outside a git checkout.
+          export PATH="/usr/bin:/bin:/usr/local/bin:$PATH"
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          COMMIT=$(git -C "${SRCROOT}" rev-parse --short HEAD 2>/dev/null || echo "")
+          if [ -n "$COMMIT" ] && [ -f "$PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Set :GitCommit $COMMIT" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Add :GitCommit string $COMMIT" "$PLIST"
+          fi
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.graft.Graft

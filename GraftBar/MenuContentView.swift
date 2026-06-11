@@ -25,9 +25,20 @@ struct MenuContentView: View {
             orphanSection
             Divider()
             actions
+            footer
         }
         .padding(12)
         .frame(width: 260)
+    }
+
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Text(BuildInfo.footer)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
     }
 
     private var header: some View {
