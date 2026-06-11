@@ -171,6 +171,14 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 - Menu-bar GUI talking to the daemon
 - `Twig`: native `Virtualization.framework` backend
 
+## Install
+
+```sh
+brew install briancorbin/tap/graft
+```
+
+(Requires Apple Silicon + [Tart](https://tart.run). The formula pulls in Tart as a dependency.)
+
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).
