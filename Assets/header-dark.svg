@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="116" viewBox="0 0 520 116">
+  <rect x="36" y="18" width="80" height="80" rx="19" fill="#f0ece0"/>
+  <g transform="translate(52,34) scale(0.48)" fill="#15613a">
+    <line x1="40" y1="92" x2="40" y2="33" stroke="#15613a" stroke-width="7" stroke-linecap="round"/>
+    <path d="M40 58 C40 45 58 45 70 40" fill="none" stroke="#15613a" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="40" cy="58" r="4.5"/>
+    <circle cx="72" cy="40" r="7.5"/>
+    <path d="M40 35 Q29 19 50 12 Q49 31 40 35 Z"/>
+  </g>
+  <text x="138" y="60" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="42" font-weight="bold" fill="#ececec">Graft</text>
+  <text x="140" y="86" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" fill="#9a9a9a">Ephemeral GitHub Actions runners on Tart VMs</text>
+</svg>
