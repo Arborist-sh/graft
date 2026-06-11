@@ -48,6 +48,16 @@ public enum Tart {
         try await Shell.runChecked(executable, ["delete", name], timeout: .seconds(30))
     }
 
+    /// Push a local image to an OCI registry ref. No timeout — uploads can take minutes.
+    public static func push(name: String, to ref: String) async throws {
+        try await Shell.runChecked(executable, ["push", name, ref])
+    }
+
+    /// Pull an image from a registry into the local cache. No timeout — large pull.
+    public static func pull(ref: String) async throws {
+        try await Shell.runChecked(executable, ["pull", ref])
+    }
+
     /// Current IP, or nil if the VM has no lease yet (DHCP can take 10–60s). Bounded —
     /// a hung `tart ip` would otherwise wedge the acquire loop forever.
     public static func ip(name: String) async throws -> String? {
