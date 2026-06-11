@@ -39,7 +39,8 @@ struct MenuContentView: View {
                 .font(.headline)
             Spacer()
             if controller.isRunning {
-                Text("\(controller.runners.count) runner\(controller.runners.count == 1 ? "" : "s")")
+                let n = controller.slots.count
+                Text("\(n) runner\(n == 1 ? "" : "s")")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -74,18 +75,37 @@ struct MenuContentView: View {
 
     @ViewBuilder
     private var runnerList: some View {
-        if controller.runners.isEmpty {
+        if controller.slots.isEmpty {
             Text("No active runners")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         } else {
-            ForEach(controller.runners, id: \.vm.name) { runner in
-                HStack {
-                    Text(runner.pool).font(.subheadline)
+            ForEach(controller.slots) { slot in
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(Self.phaseColor(slot.phaseKind))
+                        .frame(width: 7, height: 7)
+                    Text(slot.tag).font(.subheadline)
                     Spacer()
-                    Text(runner.vm.ip).font(.caption).foregroundStyle(.secondary)
+                    Text(slot.phaseLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                .help(slot.ip.map { "\(slot.vmName ?? slot.tag) · \($0)" } ?? (slot.vmName ?? slot.tag))
             }
+        }
+    }
+
+    /// Status-dot colour per phase kind.
+    private static func phaseColor(_ kind: String) -> Color {
+        switch kind {
+        case "ready": return .green
+        case "busy": return .blue
+        case "acquiring", "provisioning", "starting", "connected": return .orange
+        case "stopping", "deregistering", "retrying": return .secondary
+        default: return .secondary
         }
     }
 

@@ -10,6 +10,9 @@ import GraftCore
 final class GraftController: ObservableObject {
     @Published var isRunning = false
     @Published var runners: [RunnerRecord] = []
+    /// Per-slot live phase (booting → ready → running job → stopping), from the
+    /// daemon's persisted state. Drives the per-runner status rows.
+    @Published var slots: [SlotStatus] = []
     @Published var activeProfile: String?
     @Published var profiles: [String] = []
     /// Transient note shown in the menu during an action (e.g. "Booting runners… 1/2").
@@ -46,7 +49,9 @@ final class GraftController: ObservableObject {
         isRunning = Daemon.isRunning
         // Only trust the snapshot while the daemon is up — a crashed daemon leaves
         // a stale file, and showing phantom runners under "Stopped" is misleading.
-        runners = isRunning ? (state.load()?.runners ?? []) : []
+        let snapshot = isRunning ? state.load() : nil
+        runners = snapshot?.runners ?? []
+        slots = (snapshot?.slots ?? []).sorted { $0.tag < $1.tag }
         activeProfile = Profiles.activeName()
         profiles = Profiles.names()
         if isStopping && !isRunning {

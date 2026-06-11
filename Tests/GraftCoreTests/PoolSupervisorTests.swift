@@ -121,6 +121,12 @@ struct PoolSupervisorTests {
         }
         #expect(await recorder.acquired.count == 5)
 
+        // Per-slot phase is persisted to the state file (what the menu bar reads),
+        // even with no live dashboard.
+        let live = StateManager(directory: stateDir).load()
+        #expect(live?.slots.count == 5)
+        #expect(live?.slots.allSatisfy { !$0.phaseLabel.isEmpty } == true)
+
         // Graceful shutdown releases every VM. The slot's own teardown and the
         // shutdown watcher both target it, so assert coverage (every VM released)…
         task.cancel()

@@ -13,15 +13,55 @@ public struct RunnerRecord: Codable, Sendable, Equatable {
     }
 }
 
+/// Live status of one runner slot, for out-of-process status UIs (the menu-bar app,
+/// `graft status`). Persisted alongside `runners` so the daemon's per-slot phase is
+/// visible even with no live dashboard. `phaseKind` is a stable key for icon/colour;
+/// `phaseLabel` is the human string.
+public struct SlotStatus: Codable, Sendable, Equatable, Identifiable {
+    public let tag: String          // e.g. "mac#0"
+    public let pool: String
+    public var vmName: String?
+    public var ip: String?
+    public var phaseLabel: String   // "running job: build-and-test"
+    public var phaseKind: String    // "busy"
+    public var since: Date
+
+    public var id: String { tag }
+
+    public init(
+        tag: String, pool: String, vmName: String? = nil, ip: String? = nil,
+        phaseLabel: String, phaseKind: String, since: Date
+    ) {
+        self.tag = tag
+        self.pool = pool
+        self.vmName = vmName
+        self.ip = ip
+        self.phaseLabel = phaseLabel
+        self.phaseKind = phaseKind
+        self.since = since
+    }
+}
+
 /// A snapshot of what the supervisor believes is running. Persisted so a restart
 /// (or crash) can reconcile against reality instead of leaking VMs.
 public struct PoolState: Codable, Sendable {
     public var runners: [RunnerRecord]
+    public var slots: [SlotStatus]
     public var updatedAt: Date
 
-    public init(runners: [RunnerRecord] = [], updatedAt: Date = Date()) {
+    public init(runners: [RunnerRecord] = [], slots: [SlotStatus] = [], updatedAt: Date = Date()) {
         self.runners = runners
+        self.slots = slots
         self.updatedAt = updatedAt
+    }
+
+    // Tolerate older state files (and forward-compat) by defaulting any missing key.
+    enum CodingKeys: String, CodingKey { case runners, slots, updatedAt }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        runners = try c.decodeIfPresent([RunnerRecord].self, forKey: .runners) ?? []
+        slots = try c.decodeIfPresent([SlotStatus].self, forKey: .slots) ?? []
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 }
 

@@ -44,6 +44,22 @@ public enum RunnerPhase: Sendable {
         case .done: return "done"
         }
     }
+
+    /// Stable key (no payload) for status UIs to pick an icon/colour.
+    public var kind: String {
+        switch self {
+        case .acquiring: return "acquiring"
+        case .provisioning: return "provisioning"
+        case .starting: return "starting"
+        case .connected: return "connected"
+        case .ready: return "ready"
+        case .busy: return "busy"
+        case .deregistering: return "deregistering"
+        case .stopping: return "stopping"
+        case .retrying: return "retrying"
+        case .done: return "done"
+        }
+    }
 }
 
 /// Per-slot progress callback: `(slotTag, vmName?, phase)`. Invoked from multiple
@@ -66,6 +82,10 @@ public actor PoolSupervisor {
     /// teardown can't both fire `tart stop`/`delete` on the same VM and wedge tart
     /// on its per-VM lock inside an un-cancellable `Shell.run`.
     private var releasing: Set<String> = []
+    /// Per-slot phase, persisted so out-of-process UIs (menu bar, `graft status`)
+    /// can show what each slot is doing — works in daemon mode where there's no
+    /// live dashboard.
+    private var slots: [String: SlotStatus] = [:]
 
     /// `github` is a factory keyed by App ID — different pools can use different
     /// GitHub Apps (personal vs. work), each with its own client.
@@ -146,7 +166,9 @@ public actor PoolSupervisor {
     private func runSlot(pool: PoolConfig, index: Int) async {
         let github = github(pool.github.appId)
         let tag = "\(pool.name)#\(index)"
-        func report(_ phase: RunnerPhase, _ vm: String? = nil) { status?(tag, vm, phase) }
+        func report(_ phase: RunnerPhase, _ vm: String? = nil) {
+            recordPhase(tag: tag, pool: pool.name, vm: vm, phase: phase)
+        }
 
         while !Task.isCancelled {
             do {
@@ -161,7 +183,7 @@ public actor PoolSupervisor {
                     let jit = try await github.generateJITRunner(pool: pool, runnerName: vm.name)
                     runnerID = jit.runnerID
                     report(.starting, vm.name)
-                    let onLine = Self.runnerLineHandler(tag: tag, vm: vm.name, status: status)
+                    let onLine = makeRunnerLineHandler(tag: tag, pool: pool.name, vm: vm.name)
                     let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig, onLine: onLine)
                     Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
                 } catch is CancellationError {
@@ -212,22 +234,46 @@ public actor PoolSupervisor {
     /// markers to move the slot's row to ready / running-job. `@Sendable` — the
     /// streamer calls it from a background reader, so it touches only thread-safe
     /// `Log` and the status reporter.
-    private static func runnerLineHandler(tag: String, vm: String, status: RunnerStatusReporter?) -> @Sendable (String) -> Void {
+    private nonisolated func makeRunnerLineHandler(tag: String, pool: String, vm: String) -> @Sendable (String) -> Void {
         { line in
             if !line.trimmingCharacters(in: .whitespaces).isEmpty {
                 Log.raw("[\(tag)] \(line)")
             }
+            let phase: RunnerPhase?
             if line.contains("Listening for Jobs") {
-                status?(tag, vm, .ready)
+                phase = .ready
             } else if let range = line.range(of: "Running job: ") {
-                let job = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                status?(tag, vm, .busy(job))
+                phase = .busy(String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces))
             } else if line.contains("completed with result") {
-                status?(tag, vm, .ready)
+                phase = .ready
             } else if line.contains("Connected to GitHub") {
-                status?(tag, vm, .connected)
+                phase = .connected
+            } else {
+                phase = nil
+            }
+            if let phase {
+                // Hop back onto the actor — the reader runs off-isolation.
+                Task { await self.recordPhase(tag: tag, pool: pool, vm: vm, phase: phase) }
             }
         }
+    }
+
+    /// Single funnel for every phase change: update the persisted per-slot status and
+    /// fan out to the live dashboard reporter. `.done` removes the slot's row.
+    private func recordPhase(tag: String, pool: String, vm: String?, phase: RunnerPhase) {
+        if case .done = phase {
+            slots[tag] = nil
+        } else {
+            let prior = slots[tag]
+            let ip = vm.flatMap { runners[$0]?.vm.ip } ?? prior?.ip
+            let since = (prior?.phaseKind == phase.kind) ? (prior?.since ?? Date()) : Date()
+            slots[tag] = SlotStatus(
+                tag: tag, pool: pool, vmName: vm ?? prior?.vmName, ip: ip,
+                phaseLabel: phase.label, phaseKind: phase.kind, since: since
+            )
+        }
+        persist()
+        status?(tag, vm, phase)
     }
 
     // MARK: Tracking + persistence
@@ -260,7 +306,11 @@ public actor PoolSupervisor {
 
     private func persist() {
         do {
-            try state.save(PoolState(runners: Array(runners.values), updatedAt: Date()))
+            try state.save(PoolState(
+                runners: Array(runners.values),
+                slots: slots.values.sorted { $0.tag < $1.tag },
+                updatedAt: Date()
+            ))
         } catch {
             Log.warn("state save failed: \(error)")
         }
@@ -279,6 +329,7 @@ public actor PoolSupervisor {
         // Sweep any graft-* VMs that never made it into state (crash before persist).
         await sweepGraftVMs()
         runners.removeAll()
+        slots.removeAll()
         persist()
     }
 
@@ -308,6 +359,7 @@ public actor PoolSupervisor {
             await releaseOnce(record.vm)
         }
         runners.removeAll()
+        slots.removeAll()
         // Final sweep catches anything a slot's own teardown raced past.
         await sweepGraftVMs()
         persist()
