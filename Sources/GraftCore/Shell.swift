@@ -45,7 +45,8 @@ public enum Shell {
     public static func run(
         _ executable: String,
         _ arguments: [String] = [],
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: Duration? = nil
     ) async throws -> ShellResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -57,21 +58,41 @@ public enum Shell {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
-        try process.run()
+        let box = UncheckedSendableBox(process)
+        return try await withTaskCancellationHandler {
+            try process.run()
 
-        // Drain both pipes concurrently — reading only after exit risks a deadlock
-        // if output exceeds the ~64KB pipe buffer.
-        async let outData = drain(outPipe.fileHandleForReading)
-        async let errData = drain(errPipe.fileHandleForReading)
-        let (out, err) = await (outData, errData)
+            // Drain both pipes concurrently — reading only after exit risks a deadlock
+            // if output exceeds the ~64KB pipe buffer.
+            async let outData = drain(outPipe.fileHandleForReading)
+            async let errData = drain(errPipe.fileHandleForReading)
 
-        process.waitUntilExit()
+            // Bound the wait when asked, so a hung subprocess (e.g. a wedged `tart ip`)
+            // can't block a slot forever. Terminating the process closes its pipes,
+            // which lets the drains finish.
+            var timedOut = false
+            if let timeout {
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: timeout)
+                while box.value.isRunning {
+                    if clock.now >= deadline { timedOut = true; box.value.terminate(); break }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
 
-        return ShellResult(
-            exitCode: process.terminationStatus,
-            stdout: String(decoding: out, as: UTF8.self),
-            stderr: String(decoding: err, as: UTF8.self)
-        )
+            let (out, err) = await (outData, errData)
+            process.waitUntilExit()
+
+            return ShellResult(
+                exitCode: timedOut ? -1 : process.terminationStatus,
+                stdout: String(decoding: out, as: UTF8.self),
+                stderr: timedOut ? "timed out after \(timeout!)" : String(decoding: err, as: UTF8.self)
+            )
+        } onCancel: {
+            // Graceful shutdown (or a parent timeout) terminates the subprocess so the
+            // blocking wait above returns instead of hanging.
+            if box.value.isRunning { box.value.terminate() }
+        }
     }
 
     /// Run a command and return trimmed stdout, throwing `ShellError` on non-zero exit.
@@ -79,9 +100,10 @@ public enum Shell {
     public static func runChecked(
         _ executable: String,
         _ arguments: [String] = [],
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: Duration? = nil
     ) async throws -> String {
-        let result = try await run(executable, arguments, environment: environment)
+        let result = try await run(executable, arguments, environment: environment, timeout: timeout)
         guard result.succeeded else {
             throw ShellError(
                 command: ([executable] + arguments).joined(separator: " "),

@@ -249,7 +249,12 @@ public actor PoolSupervisor {
     private func releaseOnce(_ vm: RunningVM) async {
         guard releasing.insert(vm.name).inserted else { return }
         untrack(vm.name)
-        try? await provider.release(vm)
+        do {
+            try await provider.release(vm)
+        } catch {
+            // Surface it — a swallowed release failure leaves a VM holding a quota slot.
+            Log.warn("release of \(vm.name) failed: \(error)")
+        }
         releasing.remove(vm.name)
     }
 

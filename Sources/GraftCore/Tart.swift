@@ -34,23 +34,26 @@ public enum Tart {
     }
 
     public static func stop(name: String) async throws {
-        try await Shell.runChecked(executable, ["stop", name])
+        // `tart stop` self-limits to ~30s (graceful then force); bound the wrapper a
+        // little beyond that so a wedged invocation can't hang teardown.
+        try await Shell.runChecked(executable, ["stop", name], timeout: .seconds(45))
     }
 
     public static func delete(name: String) async throws {
-        try await Shell.runChecked(executable, ["delete", name])
+        try await Shell.runChecked(executable, ["delete", name], timeout: .seconds(30))
     }
 
-    /// Current IP, or nil if the VM has no lease yet (DHCP can take 10–60s).
+    /// Current IP, or nil if the VM has no lease yet (DHCP can take 10–60s). Bounded —
+    /// a hung `tart ip` would otherwise wedge the acquire loop forever.
     public static func ip(name: String) async throws -> String? {
-        let result = try await Shell.run(executable, ["ip", name])
+        let result = try await Shell.run(executable, ["ip", name], timeout: .seconds(15))
         guard result.succeeded else { return nil }
         let ip = result.stdoutTrimmed
         return ip.isEmpty ? nil : ip
     }
 
     public static func list() async throws -> [TartVM] {
-        let json = try await Shell.runChecked(executable, ["list", "--format", "json"])
+        let json = try await Shell.runChecked(executable, ["list", "--format", "json"], timeout: .seconds(20))
         guard let data = json.data(using: .utf8) else { return [] }
         return try JSONDecoder().decode([TartVM].self, from: data)
     }

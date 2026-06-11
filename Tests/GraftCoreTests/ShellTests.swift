@@ -31,6 +31,16 @@ struct ShellTests {
         #expect(lines.contains("third"))
     }
 
+    @Test("times out and terminates a hung subprocess instead of blocking forever")
+    func timesOut() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let result = try await Shell.run("sleep", ["30"], timeout: .seconds(1))
+        let elapsed = start.duration(to: clock.now)
+        #expect(!result.succeeded)              // terminated → non-zero exit
+        #expect(elapsed < .seconds(5))          // returned promptly, not after 30s
+    }
+
     @Test("strips trailing carriage returns and propagates non-zero exit")
     func stripsCRAndExitCode() async throws {
         let collected = LineCollector()
