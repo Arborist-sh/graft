@@ -1,4 +1,13 @@
-# Graft
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Assets/graft-mark-light.svg">
+    <img src="Assets/graft-mark-dark.svg" alt="Graft" width="84" height="84">
+  </picture>
+</p>
+
+<h1 align="center">Graft</h1>
+
+<p align="center">Ephemeral GitHub Actions runners on Tart VMs.</p>
 
 Ephemeral GitHub Actions runners on [Tart](https://tart.run) VMs. An open-source,
 fleet-ready replacement for Tartelet.
