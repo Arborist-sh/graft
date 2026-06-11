@@ -40,6 +40,12 @@ struct Run: AsyncParsableCommand {
 
         let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
 
+        // Pull any pool images that aren't cached yet (with progress) before the live
+        // UI starts — so the first runner doesn't silently hang on a big download.
+        for image in Set(cfg.pools.map(\.image)).sorted() {
+            try await Tart.ensureAvailable(image)
+        }
+
         // Live spinner dashboard only when we own an interactive terminal; daemon /
         // piped output keeps the plain log stream.
         let dashboard = (!daemon && isatty(STDOUT_FILENO) != 0) ? LiveDashboard() : nil

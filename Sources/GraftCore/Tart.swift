@@ -53,9 +53,29 @@ public enum Tart {
         try await Shell.runChecked(executable, ["push", name, ref])
     }
 
-    /// Pull an image from a registry into the local cache. No timeout — large pull.
+    /// Pull an image from a registry into the local cache, streaming tart's progress to
+    /// this process's terminal. No timeout — large pull.
     public static func pull(ref: String) async throws {
-        try await Shell.runChecked(executable, ["pull", ref])
+        let code = try await Shell.runStreaming(executable, ["pull", ref])
+        guard code == 0 else { throw GraftError("`tart pull \(ref)` failed (exit \(code))") }
+    }
+
+    /// Whether `ref` is already in the local store (a local VM or a pulled OCI image).
+    public static func isCached(_ ref: String) async throws -> Bool {
+        try await list().contains { $0.name == ref }
+    }
+
+    /// Make `ref` available locally so a later `clone` is instant: if it's a registry
+    /// ref (`registry/path:tag`) that isn't cached, pull it with progress. Bare local
+    /// names that don't exist are left for `clone` to error on. Returns false if it
+    /// couldn't be ensured (not cached and not a registry ref).
+    @discardableResult
+    public static func ensureAvailable(_ ref: String) async throws -> Bool {
+        if try await isCached(ref) { return true }
+        guard ref.contains("/") else { return false }   // local names have no "/"
+        Log.info("pulling \(ref) (not cached locally)…")
+        try await pull(ref: ref)
+        return true
     }
 
     /// Run a command in the guest with the host terminal inherited, returning its exit

@@ -55,6 +55,7 @@ struct Dev: AsyncParsableCommand {
         // Clone if missing; boot (with mounts) unless already running.
         let existing = try await Tart.list().first { $0.name == vmName }
         if existing == nil {
+            try await Tart.ensureAvailable(img)        // pull the image if it isn't cached
             printErr("cloning \(img) → \(vmName)…")
             try await Tart.clone(image: img, to: vmName)
         }

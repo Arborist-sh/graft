@@ -18,6 +18,7 @@ public struct ImageBuilder: Sendable {
     /// `scriptBody`, if given (the contents of the recipe's `script:` file), runs before
     /// the inline `run` steps in the same guest shell.
     public func build(_ recipe: ImageRecipe, scriptBody: String? = nil, onLine: (@Sendable (String) -> Void)? = nil) async throws {
+        try await Tart.ensureAvailable(recipe.from)        // pull the base if it isn't cached
         let temp = "graft-imgbuild-" + UUID().uuidString.prefix(8).lowercased()
         try await Tart.clone(image: recipe.from, to: temp)
         do {
