@@ -120,15 +120,20 @@ public actor PoolSupervisor {
                     runnerID = jit.runnerID
                     let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig)
                     Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
+                } catch is CancellationError {
+                    Log.info("[\(tag)] runner \(vm.name) stopped (shutdown)")
                 } catch {
                     Log.warn("[\(tag)] runner \(vm.name) failed: \(error)")
                 }
 
                 // Deregister from GitHub so a runner that never ran a job (e.g. killed
                 // on shutdown) doesn't linger as an offline husk. A completed job is
-                // already gone — deleteRunner 404s, which we ignore.
+                // already gone — deleteRunner 404s, which we ignore. Must survive the
+                // slot's own cancellation: on graceful shutdown the task is already
+                // cancelled here, so a plain `await` would be aborted and leak the
+                // runner — exactly the case this cleans up.
                 if let runnerID, let target = try? pool.github.parsedTarget() {
-                    try? await github.deleteRunner(id: runnerID, target: target)
+                    await deregister(runnerID: runnerID, target: target, via: github)
                 }
 
                 await releaseOnce(vm)
@@ -138,6 +143,20 @@ public actor PoolSupervisor {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+    }
+
+    /// Deregister a runner from GitHub, shielded from the caller's cancellation and
+    /// bounded by a timeout. `Task.detached` doesn't inherit the cancelled parent, so
+    /// the cleanup completes during graceful shutdown; the timeout keeps a GitHub
+    /// hiccup from stalling teardown.
+    private func deregister(runnerID: Int, target: GitHubTarget, via github: any JITConfigProvider) async {
+        let work = Task.detached { try await github.deleteRunner(id: runnerID, target: target) }
+        let timeout = Task.detached {
+            try await Task.sleep(for: .seconds(10))
+            work.cancel()
+        }
+        _ = try? await work.value
+        timeout.cancel()
     }
 
     // MARK: Tracking + persistence

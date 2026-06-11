@@ -61,6 +61,10 @@ private struct MockJIT: JITConfigProvider {
         GitHubAppClient.JITRunner(runnerID: abs(runnerName.hashValue % 1_000_000), encodedConfig: "jit-\(runnerName)")
     }
     func deleteRunner(id: Int, target: GitHubTarget) async throws {
+        // Simulate a cancellation-aware network call (URLSession throws when its task
+        // is cancelled). On graceful shutdown the slot's task is cancelled, so this
+        // only records if the supervisor shields the cleanup in a detached task.
+        try Task.checkCancellation()
         await recorder.deregister(id)
     }
 }
