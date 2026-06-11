@@ -138,6 +138,10 @@ graft pool add --name N --image I --app-id A --target T [--os] [--count] [--labe
 graft pool rm <name> [--profile NAME]
 graft pool list [--profile NAME]
 
+graft image build -f <recipe.json>      Build a golden image (toolchain + warm caches)
+graft image list / rm / push / pull / template     Manage images
+graft dev [--image N] [--ephemeral] [-- CMD]       Local dev VM with your repo mounted
+
 graft vm create <image> [--os macos|linux]   Clone + boot a VM, print name<TAB>ip
 graft vm delete <name>                  Stop + destroy a VM
 graft vm list [--all]                   List graft-managed (or all) VMs
@@ -154,6 +158,20 @@ graft config template
 **Profiles** live at `~/.graft/profiles/<name>.json`; the active one is used by
 `run`/`doctor`/`config validate` unless you pass `--profile` or `--config`. Switch
 setups (personal vs. work) with `graft profile use`.
+
+## Images & local dev
+
+Build a **golden image** (base + toolchain + warm caches) once and clone it for both CI
+runners and a local dev box — so your laptop and your runners run byte-identical
+environments. Tart clones are APFS copy-on-write, so baked caches cost nothing per
+runner. See **[docs/images-and-caching.md](docs/images-and-caching.md)** for recipes,
+the CoW caching strategy, and host-mount safety (read-only for shared caches).
+
+```sh
+graft image build -f image.json                      # build galaxy-detox
+graft dev --image galaxy-detox                        # shell into it, $PWD mounted
+graft dev --image galaxy-detox -- npx detox test e2e/ # or run a command
+```
 
 ## Architecture
 

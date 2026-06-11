@@ -71,6 +71,9 @@ extension Pool {
         @Option(name: .long, help: "Comma-separated labels (blank = default).")
         var labels: String?
 
+        @Option(name: .long, parsing: .singleValue, help: "Host cache mount: path | name:path | name:path:ro (repeatable). Prefer :ro for shared caches.")
+        var mount: [String] = []
+
         func run() throws {
             // Profile may not exist yet — create it on first add.
             let profileName = profile ?? Profiles.activeName() ?? "default"
@@ -82,10 +85,12 @@ extension Pool {
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
+            let mounts = try mount.map { try Mount(spec: $0) }
 
             let pool = PoolConfig(
                 name: name, image: image, os: os, count: count,
-                github: GitHubConfig(appId: appId, target: target, runnerGroupId: runnerGroupId, labels: labelList)
+                github: GitHubConfig(appId: appId, target: target, runnerGroupId: runnerGroupId, labels: labelList),
+                mounts: mounts.isEmpty ? nil : mounts
             )
             let replaced = config.pools.contains { $0.name == name }
             config.pools.removeAll { $0.name == name }
