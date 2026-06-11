@@ -22,6 +22,7 @@ public enum RunnerPhase: Sendable {
     case acquiring          // cloning + booting the VM
     case provisioning       // VM booted; registering the JIT runner with GitHub
     case starting           // runner process launched, configuring inside the guest
+    case connected          // connected to GitHub; configuring before it listens
     case ready              // connected + listening for jobs
     case busy(String)       // running a named job
     case deregistering      // removing the JIT runner from GitHub
@@ -34,6 +35,7 @@ public enum RunnerPhase: Sendable {
         case .acquiring: return "booting VM"
         case .provisioning: return "registering runner"
         case .starting: return "starting up"
+        case .connected: return "connected · preparing"
         case .ready: return "ready · waiting for jobs"
         case .busy(let job): return "running job: \(job)"
         case .deregistering: return "deregistering runner"
@@ -212,7 +214,9 @@ public actor PoolSupervisor {
     /// `Log` and the status reporter.
     private static func runnerLineHandler(tag: String, vm: String, status: RunnerStatusReporter?) -> @Sendable (String) -> Void {
         { line in
-            Log.raw("[\(tag)] \(line)")
+            if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                Log.raw("[\(tag)] \(line)")
+            }
             if line.contains("Listening for Jobs") {
                 status?(tag, vm, .ready)
             } else if let range = line.range(of: "Running job: ") {
@@ -220,6 +224,8 @@ public actor PoolSupervisor {
                 status?(tag, vm, .busy(job))
             } else if line.contains("completed with result") {
                 status?(tag, vm, .ready)
+            } else if line.contains("Connected to GitHub") {
+                status?(tag, vm, .connected)
             }
         }
     }
