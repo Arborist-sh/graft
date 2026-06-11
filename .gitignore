@@ -18,3 +18,7 @@ GraftBar.xcodeproj/
 .graft/
 *.pem
 config.local.json
+
+# App release pipeline
+dist/
+.build-app/
