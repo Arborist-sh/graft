@@ -181,7 +181,9 @@ graft dev --image rn-detox -- npx detox test e2e/     # or run a command
 ```
 
 Ready-to-adapt recipes (React Native/Detox, iOS/Fastlane, Node, script-based) live in
-**[examples/images/](examples/images/)**.
+**[examples/images/](examples/images/)**. Editing `.graft` files? There's a
+**[VS Code extension](editors/vscode/)** (highlighting incl. embedded shell, field
+completion/hover, render/build commands).
 
 ## Architecture
 

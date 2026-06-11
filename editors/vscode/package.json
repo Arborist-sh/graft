@@ -1,0 +1,57 @@
+{
+  "name": "graft",
+  "displayName": "Graft",
+  "description": "Syntax highlighting, snippets, schema, and helpers for .graft image recipes.",
+  "version": "0.1.0",
+  "publisher": "briancorbin",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/briancorbin/graft" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Snippets"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:graft"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "graft",
+        "aliases": ["Graft", "graft"],
+        "extensions": [".graft"],
+        "filenames": ["Graftfile"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "graft",
+        "scopeName": "source.graft",
+        "path": "./syntaxes/graft.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.shellscript": "shellscript"
+        }
+      }
+    ],
+    "snippets": [
+      { "language": "graft", "path": "./snippets/graft.code-snippets" }
+    ],
+    "commands": [
+      {
+        "command": "graft.render",
+        "title": "Graft: Render compiled provisioning script",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "graft.build",
+        "title": "Graft: Build image from this recipe"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "graft.render",
+          "when": "resourceLangId == graft",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}

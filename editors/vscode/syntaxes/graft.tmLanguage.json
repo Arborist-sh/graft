@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Graft",
+  "scopeName": "source.graft",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#embedded-script" },
+    { "include": "#toolchain-key" },
+    { "include": "#key" },
+    { "include": "source.yaml" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.graft"
+    },
+    "embedded-script": {
+      "comment": "run:/script: block scalar — highlight its body as shell",
+      "begin": "^(\\s*)(run|script)\\s*(:)\\s*([|>][-+]?)\\s*$",
+      "beginCaptures": {
+        "2": { "name": "keyword.control.graft" },
+        "3": { "name": "punctuation.separator.key-value.graft" },
+        "4": { "name": "keyword.operator.block-scalar.graft" }
+      },
+      "while": "^(?:\\1\\s|\\s*$)",
+      "contentName": "meta.embedded.block.shellscript",
+      "patterns": [{ "include": "source.shell" }]
+    },
+    "toolchain-key": {
+      "comment": "graft's declarative fields",
+      "match": "^(\\s*)(name|from|node|ruby|brew|gems|npm|xcode-first-launch|warm-simulators|script|mounts|os|run)(?=\\s*:)",
+      "captures": {
+        "2": { "name": "keyword.control.graft" }
+      }
+    },
+    "key": {
+      "comment": "any other YAML key",
+      "match": "^(\\s*)([\\w-]+)(?=\\s*:)",
+      "captures": {
+        "2": { "name": "entity.name.tag.yaml" }
+      }
+    }
+  }
+}

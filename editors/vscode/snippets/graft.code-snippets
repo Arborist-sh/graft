@@ -1,0 +1,43 @@
+{
+  "Graft recipe — React Native + Detox": {
+    "scope": "graft",
+    "prefix": "graft-rn",
+    "description": "A React Native + Detox iOS .graft recipe",
+    "body": [
+      "name: ${1:rn-detox}",
+      "from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+      "",
+      "node: \"${2:20}\"",
+      "npm: [detox-cli]",
+      "brew: [applesimutils]",
+      "xcode-first-launch: true",
+      "$0"
+    ]
+  },
+  "Graft recipe — iOS + Fastlane": {
+    "scope": "graft",
+    "prefix": "graft-ios",
+    "description": "An iOS + Fastlane .graft recipe",
+    "body": [
+      "name: ${1:ios-fastlane}",
+      "from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+      "",
+      "ruby: \"${2:3.3.5}\"",
+      "gems: [fastlane]",
+      "xcode-first-launch: true",
+      "$0"
+    ]
+  },
+  "Graft recipe — minimal with run: block": {
+    "scope": "graft",
+    "prefix": "graft",
+    "description": "A minimal .graft recipe with an inline run: script",
+    "body": [
+      "name: ${1:my-image}",
+      "from: ${2:ghcr.io/cirruslabs/macos-sequoia-xcode:latest}",
+      "run: |",
+      "  set -euo pipefail",
+      "  ${0:echo hello}"
+    ]
+  }
+}
