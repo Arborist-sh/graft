@@ -172,16 +172,25 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 ## Roadmap
 
 - `OrchardProvider` for multi-host fleets
+- Full desktop GUI app (dashboard, live logs, run history) — the menu-bar app's bigger sibling
 - Keychain ACL hardening for the headless daemon (bind to the graft binary)
 - `--unsafe-unrestricted-quota` (kernel boot-arg override, SIP off, opt-in)
-- Menu-bar GUI talking to the daemon
 - `Twig`: native `Virtualization.framework` backend
+
+Shipped: ✅ menu-bar app (`Graft.app`)
 
 ## Install
 
+CLI + daemon:
+
 ```sh
-brew install briancorbin/tap/graft             # CLI + daemon
-brew install --cask briancorbin/tap/graft-app  # menu-bar app (also installs the CLI)
+brew install briancorbin/tap/graft
+```
+
+Menu-bar app (installs the CLI too):
+
+```sh
+brew install --cask briancorbin/tap/graft-app
 ```
 
 Apple Silicon only. [Tart](https://tart.run) is pulled in as a dependency.
