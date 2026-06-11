@@ -47,7 +47,12 @@ final class GraftController: ObservableObject {
         guard let graft = Self.graftPath else { return }
         actionNote = "Stopping…"
         runProcess(graft, ["stop"])
-        scheduleRefresh()
+        // Hold the spinner (and the disabled controls) until the daemon has fully
+        // torn down — it removes its pidfile only after every VM is released.
+        waitForStop(attemptsRemaining: 240) { [weak self] in
+            self?.refresh()
+            self?.actionNote = nil
+        }
     }
 
     /// Switch the active profile. If the daemon is running, restart it so the new
