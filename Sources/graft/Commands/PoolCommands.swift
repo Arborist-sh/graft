@@ -7,11 +7,40 @@ struct Pool: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pool",
         abstract: "Add, remove, or list pools in a profile.",
-        subcommands: [Add.self, Remove.self, List.self]
+        subcommands: [New.self, Add.self, Remove.self, List.self]
     )
 }
 
 extension Pool {
+    struct New: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "new",
+            abstract: "Interactively add a pool to a profile (image picked from the machine).",
+            aliases: ["create"]
+        )
+
+        @Option(name: .long, help: "Profile to edit (default: active). Created if missing.")
+        var profile: String?
+
+        @Flag(help: "Use the system keychain for key import (headless hosts).")
+        var system = false
+
+        func run() async throws {
+            let scope: KeychainScope = system ? .system : .login
+            let profileName = profile ?? Profiles.activeName() ?? "default"
+            var config = Profiles.exists(profileName)
+                ? try Profiles.load(profileName)
+                : GraftConfig(provider: "tart", secrets: SecretsConfig())
+
+            let pool = try await Wizard.buildPool(scope: scope)
+            let replaced = config.pools.contains { $0.name == pool.name }
+            config.pools.removeAll { $0.name == pool.name }
+            config.pools.append(pool)
+            try Profiles.save(config, as: profileName)
+            printErr("✓ \(replaced ? "replaced" : "added") pool '\(pool.name)' in profile '\(profileName)'")
+        }
+    }
+
     struct Add: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Add (or replace) a pool in a profile.")
 

@@ -6,11 +6,27 @@ struct Profile: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "profile",
         abstract: "Manage config profiles (switch between e.g. personal and work).",
-        subcommands: [List.self, Use.self, Show.self, Remove.self, Path.self]
+        subcommands: [Create.self, List.self, Use.self, Show.self, Remove.self, Path.self]
     )
 }
 
 extension Profile {
+    struct Create: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "create",
+            abstract: "Interactively create a profile (name, pools, keys).",
+            aliases: ["new"]
+        )
+
+        @Flag(help: "Store/read keys in the system keychain (headless hosts).")
+        var system = false
+
+        func run() async throws {
+            let scope: KeychainScope = system ? .system : .login
+            try await Wizard.createProfile(scope: scope)
+        }
+    }
+
     struct List: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List profiles (active marked with *).")
 

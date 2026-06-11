@@ -126,10 +126,12 @@ graft run [--profile NAME] [--daemon]   Start the supervisor
 graft status                            Show supervisor + runner state
 graft stop                              Gracefully stop a running supervisor
 
+graft profile create                    Interactive wizard: new profile + pools
 graft profile list                      List profiles (active marked *)
 graft profile use <name>                Set the active profile
 graft profile show [name]               Print a profile's config
 graft profile rm <name>                 Delete a profile
+graft pool new [--profile NAME]         Interactive wizard: add a pool (image picked from the machine)
 graft pool add --name N --image I --app-id A --target T [--os] [--count] [--labels]
 graft pool rm <name> [--profile NAME]
 graft pool list [--profile NAME]
