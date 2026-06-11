@@ -88,10 +88,13 @@ struct PoolSupervisorTests {
         }
         #expect(await recorder.acquired.count == 5)
 
-        // Graceful shutdown releases every VM.
+        // Graceful shutdown releases every VM (possibly via both the slot and the
+        // shutdown watcher — release is idempotent, so assert coverage, not count).
         task.cancel()
         await task.value
-        #expect(await recorder.released.count == 5)
+        let acquired = await recorder.acquired
+        let released = await recorder.released
+        #expect(Set(released) == Set(acquired))
 
         // State is cleaned up.
         let persisted = StateManager(directory: stateDir).load()

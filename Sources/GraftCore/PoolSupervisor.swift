@@ -83,6 +83,18 @@ public actor PoolSupervisor {
                     group.addTask { await self.runSlot(pool: pool, index: slot) }
                 }
             }
+
+            // Shutdown watcher: once cancelled, stop every tracked VM. Stopping a VM
+            // kills its guest runner, which makes a slot's blocked `tart exec` return
+            // so the slot can tear down and the group can complete. Without this, a
+            // runner that ignores SIGTERM hangs the entire shutdown.
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                await self.stopTrackedVMs()
+            }
+
             await group.waitForAll()
         }
 
@@ -150,15 +162,29 @@ public actor PoolSupervisor {
             try? await provider.release(record.vm)
         }
         // Sweep any graft-* VMs that never made it into state (crash before persist).
-        if let tart = provider as? LocalTartProvider {
-            for vm in (try? await tart.graftManagedVMs()) ?? [] {
-                Log.info("reconcile: sweeping orphan \(vm.name)")
-                try? await Tart.stop(name: vm.name)
-                try? await Tart.delete(name: vm.name)
-            }
-        }
+        await sweepGraftVMs()
         runners.removeAll()
         persist()
+    }
+
+    /// Stop every tracked VM — the reliable lever for breaking a slot blocked in
+    /// `tart exec` during shutdown.
+    private func stopTrackedVMs() async {
+        for record in runners.values {
+            Log.info("shutdown: stopping \(record.vm.name)")
+            try? await provider.release(record.vm)
+        }
+    }
+
+    /// Destroy any graft-managed VMs still on the host — belt-and-suspenders so a
+    /// crash or a teardown race never leaves a VM (and its quota slot) behind.
+    private func sweepGraftVMs() async {
+        guard let tart = provider as? LocalTartProvider else { return }
+        for vm in (try? await tart.graftManagedVMs()) ?? [] {
+            Log.info("sweeping \(vm.name)")
+            try? await Tart.stop(name: vm.name)
+            try? await Tart.delete(name: vm.name)
+        }
     }
 
     private func cleanup() async {
@@ -167,6 +193,8 @@ public actor PoolSupervisor {
             try? await provider.release(record.vm)
         }
         runners.removeAll()
+        // Final sweep catches anything a slot's own teardown raced past.
+        await sweepGraftVMs()
         persist()
         Log.info("graft stopped")
     }
