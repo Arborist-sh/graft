@@ -54,13 +54,14 @@ public struct LocalTartProvider: VMProvider {
         try await Shell.run(Tart.executable, ["exec", vm.name] + command)
     }
 
-    public func execStreaming(on vm: RunningVM, script: String) async throws -> Int32 {
+    public func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {
         // `tart exec -i <name> bash -s` runs the script on stdin inside the guest;
-        // stdout/stderr stream straight through, exit code propagates back.
+        // stdout/stderr stream back, exit code propagates.
         try await Shell.runStreaming(
             Tart.executable,
             ["exec", "-i", vm.name, "bash", "-s"],
-            stdin: script
+            stdin: script,
+            onLine: onLine
         )
     }
 

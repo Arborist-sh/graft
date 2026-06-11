@@ -10,7 +10,7 @@ public protocol JITConfigProvider: Sendable {
 /// Runs the ephemeral runner in a VM and returns its exit code.
 /// `RunnerProvisioner` is the production conformer.
 public protocol RunnerRunner: Sendable {
-    func runEphemeralRunner(on vm: RunningVM, jitConfig: String) async throws -> Int32
+    func runEphemeralRunner(on vm: RunningVM, jitConfig: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32
 }
 
 extension GitHubAppClient: JITConfigProvider {}
@@ -21,7 +21,9 @@ extension RunnerProvisioner: RunnerRunner {}
 public enum RunnerPhase: Sendable {
     case acquiring          // cloning + booting the VM
     case provisioning       // VM booted; registering the JIT runner with GitHub
-    case running            // runner is up; jobs flow through it
+    case starting           // runner process launched, configuring inside the guest
+    case ready              // connected + listening for jobs
+    case busy(String)       // running a named job
     case deregistering      // removing the JIT runner from GitHub
     case stopping           // stopping + deleting the VM
     case retrying           // acquire failed; backing off
@@ -31,7 +33,9 @@ public enum RunnerPhase: Sendable {
         switch self {
         case .acquiring: return "booting VM"
         case .provisioning: return "registering runner"
-        case .running: return "running"
+        case .starting: return "starting up"
+        case .ready: return "ready · waiting for jobs"
+        case .busy(let job): return "running job: \(job)"
         case .deregistering: return "deregistering runner"
         case .stopping: return "stopping VM"
         case .retrying: return "retrying…"
@@ -154,8 +158,9 @@ public actor PoolSupervisor {
                     report(.provisioning, vm.name)
                     let jit = try await github.generateJITRunner(pool: pool, runnerName: vm.name)
                     runnerID = jit.runnerID
-                    report(.running, vm.name)
-                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig)
+                    report(.starting, vm.name)
+                    let onLine = Self.runnerLineHandler(tag: tag, vm: vm.name, status: status)
+                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig, onLine: onLine)
                     Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
                 } catch is CancellationError {
                     Log.info("[\(tag)] runner \(vm.name) stopped (shutdown)")
@@ -198,6 +203,25 @@ public actor PoolSupervisor {
         }
         _ = try? await work.value
         timeout.cancel()
+    }
+
+    /// Build the runner-output handler: echo each line above the dashboard (via the
+    /// `Log` sink, so it never corrupts the live region) and watch for GitHub runner
+    /// markers to move the slot's row to ready / running-job. `@Sendable` — the
+    /// streamer calls it from a background reader, so it touches only thread-safe
+    /// `Log` and the status reporter.
+    private static func runnerLineHandler(tag: String, vm: String, status: RunnerStatusReporter?) -> @Sendable (String) -> Void {
+        { line in
+            Log.raw("[\(tag)] \(line)")
+            if line.contains("Listening for Jobs") {
+                status?(tag, vm, .ready)
+            } else if let range = line.range(of: "Running job: ") {
+                let job = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                status?(tag, vm, .busy(job))
+            } else if line.contains("completed with result") {
+                status?(tag, vm, .ready)
+            }
+        }
     }
 
     // MARK: Tracking + persistence

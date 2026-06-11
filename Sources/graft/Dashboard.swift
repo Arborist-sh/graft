@@ -58,7 +58,7 @@ final class LiveDashboard: @unchecked Sendable {
 
     func update(slot: String, vm: String?, phase: RunnerPhase) {
         lock.lock(); defer { lock.unlock() }
-        if phase == .done {
+        if case .done = phase {
             rows[slot] = nil
             order.removeAll { $0 == slot }
         } else {

@@ -99,14 +99,26 @@ public enum Shell {
         _ executable: String,
         _ arguments: [String] = [],
         stdin: String? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        onLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [executable] + arguments
         process.environment = environment ?? ProcessInfo.processInfo.environment
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
+
+        // With a line handler, capture stdout/stderr and forward live (so a live
+        // dashboard can own the terminal); otherwise inherit this process's streams.
+        if let onLine {
+            let outPipe = Pipe(), errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+            readLines(outPipe.fileHandleForReading, onLine)
+            readLines(errPipe.fileHandleForReading, onLine)
+        } else {
+            process.standardOutput = FileHandle.standardOutput
+            process.standardError = FileHandle.standardError
+        }
 
         let inputPipe = Pipe()
         if stdin != nil { process.standardInput = inputPipe }
@@ -146,6 +158,34 @@ public enum Shell {
         process.environment = ProcessInfo.processInfo.environment
         try process.run()
         process.waitUntilExit()
+    }
+
+    /// Read a pipe line-by-line to EOF on a background queue, invoking `onLine` for
+    /// each complete line (trailing `\r` stripped) plus any final unterminated line.
+    /// Holds the `FileHandle` alive for the read's duration via the box.
+    private static func readLines(_ handle: FileHandle, _ onLine: @escaping @Sendable (String) -> Void) {
+        let box = UncheckedSendableBox(handle)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fd = box.value.fileDescriptor
+            var buffer = Data()
+            let capacity = 16_384
+            var chunk = [UInt8](repeating: 0, count: capacity)
+            func flush(_ data: Data) {
+                var line = String(decoding: data, as: UTF8.self)
+                if line.hasSuffix("\r") { line.removeLast() }
+                onLine(line)
+            }
+            while true {
+                let n = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, capacity) }
+                if n <= 0 { break }
+                buffer.append(contentsOf: chunk[0..<n])
+                while let nl = buffer.firstIndex(of: 0x0A) {
+                    flush(buffer[buffer.startIndex..<nl])
+                    buffer.removeSubrange(buffer.startIndex...nl)
+                }
+            }
+            if !buffer.isEmpty { flush(buffer) }
+        }
     }
 
     /// Drain a pipe to EOF off the cooperative pool using POSIX `read`, keeping the

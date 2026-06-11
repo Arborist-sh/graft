@@ -12,11 +12,12 @@ public struct RunnerProvisioner: Sendable {
     }
 
     /// Wait for the guest, then run the ephemeral runner with `jitConfig`. Blocks
-    /// until the runner's single job finishes; returns its exit code.
-    public func runEphemeralRunner(on vm: RunningVM, jitConfig: String) async throws -> Int32 {
+    /// until the runner's single job finishes; returns its exit code. `onLine`, if
+    /// given, receives the runner's output line-by-line.
+    public func runEphemeralRunner(on vm: RunningVM, jitConfig: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {
         try await provider.waitForGuest(vm)
         let script = Self.provisionScript(os: vm.os, jitConfig: jitConfig)
-        return try await provider.execStreaming(on: vm, script: script)
+        return try await provider.execStreaming(on: vm, script: script, onLine: onLine)
     }
 
     /// The bash run inside the guest. Uses a pre-baked runner at `~/actions-runner`

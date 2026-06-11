@@ -20,10 +20,12 @@ public protocol VMProvider: Sendable {
     /// the channel — Tart uses `tart exec` (Guest Agent), Orchard its own transport.
     func exec(on vm: RunningVM, _ command: [String]) async throws -> ShellResult
 
-    /// Run a script in the guest, streaming its output to this process, and return
-    /// the remote exit code. Blocks until the command exits — this is how we run the
-    /// ephemeral runner and wait for its single job to finish.
-    func execStreaming(on vm: RunningVM, script: String) async throws -> Int32
+    /// Run a script in the guest, streaming its output, and return the remote exit
+    /// code. Blocks until the command exits — this is how we run the ephemeral runner
+    /// and wait for its single job to finish. `onLine`, if given, receives each output
+    /// line live (so the supervisor can echo it and watch for runner state markers);
+    /// when nil the output inherits this process's streams.
+    func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32
 }
 
 extension VMProvider {

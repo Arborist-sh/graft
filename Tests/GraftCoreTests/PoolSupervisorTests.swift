@@ -51,7 +51,7 @@ private struct MockProvider: VMProvider {
     func exec(on vm: RunningVM, _ command: [String]) async throws -> ShellResult {
         ShellResult(exitCode: 0, stdout: "", stderr: "")
     }
-    func execStreaming(on vm: RunningVM, script: String) async throws -> Int32 { 0 }
+    func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 { 0 }
 }
 
 private struct MockJIT: JITConfigProvider {
@@ -72,7 +72,7 @@ private struct MockJIT: JITConfigProvider {
 /// Holds the VM (one job in flight) until the slot is cancelled, so each slot
 /// acquires exactly one VM — making counts deterministic.
 private struct BlockingRunner: RunnerRunner {
-    func runEphemeralRunner(on vm: RunningVM, jitConfig: String) async throws -> Int32 {
+    func runEphemeralRunner(on vm: RunningVM, jitConfig: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {
         while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
         return 0
     }
