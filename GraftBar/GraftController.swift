@@ -37,7 +37,9 @@ final class GraftController: ObservableObject {
     /// stuck "Stopping…" if the daemon is actually gone.
     func refresh() {
         isRunning = Daemon.isRunning
-        runners = state.load()?.runners ?? []
+        // Only trust the snapshot while the daemon is up — a crashed daemon leaves
+        // a stale file, and showing phantom runners under "Stopped" is misleading.
+        runners = isRunning ? (state.load()?.runners ?? []) : []
         activeProfile = Profiles.activeName()
         profiles = Profiles.names()
         if isStopping && !isRunning {
