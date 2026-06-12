@@ -63,7 +63,7 @@ graft dev . -- yarn test             # mount $PWD, run one command, tear down
 |---|---|
 | `--image <ref>` | base image for a **new** box (default: pick from local images) |
 | `--ref <branch\|tag>` | branch/tag to clone |
-| `--name <name>` | override the box name |
+| `--name <name>` | name the box (kept in the `graft-dev-` namespace, shows in `ls`) — e.g. a second box for the same repo |
 | `--network bridged:<iface>` | bridged networking (e.g. behind Zscaler) — see [ec2-mac-setup](ec2-mac-setup.md) |
 | `--mount <path[:ro]>` | extra host directory shared at boot (boot-time only — can't mount into a running box) |
 | `--ephemeral` | force a throwaway box even when cloning |

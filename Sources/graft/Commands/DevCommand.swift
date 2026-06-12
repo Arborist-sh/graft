@@ -83,14 +83,16 @@ extension Dev {
                 if !code { openInCode = DevBoxPicker.askConnect() }   // picker offers shell/code
             }
 
-            // 2) Box name + whether it's a fresh box needing an image.
+            // 2) Box name + whether it's a fresh box needing an image. `--name` is kept in
+            // the graft-dev- namespace so it shows up in `ls`/`rm`/`graft dev <name>`.
+            let override = name.map { $0.hasPrefix("graft-dev-") ? $0 : "graft-dev-\($0)" }
             let vmName: String
             let needsImage: Bool
             switch source {
             case .resume(let b): vmName = b; needsImage = false
-            case .clone(_, let n): vmName = name ?? "graft-dev-\(n)"; needsImage = true
+            case .clone(_, let n): vmName = override ?? "graft-dev-\(n)"; needsImage = true
             case .mount, .scratch:
-                vmName = name ?? "graft-dev-eph-" + UUID().uuidString.prefix(8).lowercased()
+                vmName = override ?? "graft-dev-eph-" + UUID().uuidString.prefix(8).lowercased()
                 needsImage = true
             }
 
@@ -143,9 +145,8 @@ extension Dev {
             let guestPath: String
             switch source {
             case .clone(let url, let repoName):
-                printErr("cloning \(url) into the VM…")
-                let token = await DevCode.ghToken()
-                guestPath = try await DevCode.cloneRepo(url: url, ref: ref, repoName: repoName, alias: vmName, token: token)
+                printErr("cloning \(url) into the VM (or reusing the existing checkout)…")
+                guestPath = try await DevCode.cloneRepo(url: url, ref: ref, repoName: repoName, alias: vmName)
             case .resume(let box):
                 let slug = box.replacingOccurrences(of: "graft-dev-", with: "")
                 guestPath = (try? await DevCode.resolveWorkDir(slug: slug, on: vm, provider: provider)) ?? "$HOME"

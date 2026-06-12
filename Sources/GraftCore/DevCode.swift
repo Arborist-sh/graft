@@ -176,7 +176,16 @@ public enum DevCode {
     /// `token`, auth is supplied via `GIT_ASKPASS` (token passed over stdin — never in argv,
     /// `.git/config`, or the VM's disk), then the remote is reset to a clean URL so VS Code's
     /// credential forwarding owns push/pull. Idempotent. Returns the absolute guest path.
-    public static func cloneRepo(url: String, ref: String?, repoName: String, alias: String, token: String?) async throws -> String {
+    public static func cloneRepo(url: String, ref: String?, repoName: String, alias: String) async throws -> String {
+        // Already cloned? Reuse it — and skip the token fetch entirely (a resume shouldn't
+        // touch `gh`). Returns the absolute path.
+        if let existing = try? await Shell.run("ssh", ["-o", "BatchMode=yes", alias,
+            "d=\"$HOME/work/\(repoName)\"; [ -d \"$d/.git\" ] && echo \"$d\""], timeout: .seconds(10)),
+            existing.succeeded, !existing.stdoutTrimmed.isEmpty {
+            return existing.stdoutTrimmed
+        }
+
+        let token = await ghToken()
         let branch = ref.map { " --branch '\($0)'" } ?? ""
         // `dest` is a bash variable assigned with double quotes so `$HOME` actually expands
         // in the guest — do NOT inline it single-quoted (that clones into a literal "$HOME"
@@ -202,7 +211,6 @@ public enum DevCode {
         let script = """
         set -e
         dest="$HOME/work/\(repoName)"
-        if [ -d "$dest/.git" ]; then exit 0; fi
         mkdir -p "$(dirname "$dest")"
         \(clone)
         """
