@@ -11,14 +11,56 @@ import GraftCore
 struct Tree: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tree",
-        abstract: "Inspect the tree — trunk, branches, and the leaves growing on it.",
-        subcommands: [Status.self, Branches.self, Leaves.self]
+        abstract: "Plant, tend, and inspect the tree — trunk, branches, and leaves.",
+        subcommands: [Plant.self, Branch.self, Prune.self, Status.self, Branches.self, Leaves.self]
     )
 }
 
 // MARK: - Shared
 
 extension Tree {
+    /// Default trunk data dir + where we stash the one-time bootstrap-admin token the
+    /// controller prints on first run, so `branch`/`prune` can authenticate later.
+    static var dataDir: String { (NSHomeDirectory() as NSString).appendingPathComponent(".orchard/controller") }
+    static var adminTokenFile: String { (NSHomeDirectory() as NSString).appendingPathComponent(".orchard/admin-token.txt") }
+    static let workerAccount = "graft-workers"
+
+    /// Fail early with an install hint if the `orchard` CLI isn't on PATH.
+    static func requireOrchard() async throws {
+        guard let r = try? await Shell.run("orchard", ["--version"]), r.succeeded else {
+            throw GraftError("`orchard` not found on PATH — install it with `brew install cirruslabs/cli/orchard`")
+        }
+    }
+
+    /// Strip ANSI escape codes from a line (the controller colorizes its startup banner).
+    static func stripANSI(_ s: String) -> String {
+        var out = "", inEscape = false
+        for ch in s {
+            if inEscape {
+                if ch.isLetter { inEscape = false }   // CSI sequence ends at a letter
+            } else if ch == "\u{1B}" {
+                inEscape = true
+            } else {
+                out.append(ch)
+            }
+        }
+        return out
+    }
+
+    /// Admin auth env for a trunk, from the stored bootstrap-admin token. Throws with a
+    /// clear hint when it's missing (you planted elsewhere, or need admin yourself).
+    static func adminEnv(url: String) throws -> [String: String] {
+        guard let token = try? String(contentsOfFile: adminTokenFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            throw GraftError("no admin token at \(adminTokenFile) — plant the trunk here first (`graft tree plant`), or pass a bootstrap token explicitly")
+        }
+        var env = ProcessInfo.processInfo.environment
+        env[OrchardEnv.url] = url
+        env[OrchardEnv.accountName] = "bootstrap-admin"
+        env[OrchardEnv.accountToken] = token
+        return env
+    }
+
     /// Build an `OrchardProvider` from a profile's orchard block, resolving the token
     /// from the Keychain when it isn't inline (same order as `graft run`).
     static func provider(profile: String?) throws -> OrchardProvider {
@@ -105,5 +147,127 @@ extension Tree {
             print(header)
             rows.forEach { print($0) }
         }
+    }
+}
+
+// MARK: - graft tree plant / branch / prune  (trunk + branch lifecycle)
+
+extension Tree {
+    /// Plant the trunk: run the controller in the foreground. On first run the controller
+    /// prints a one-time `bootstrap-admin` token — we capture it so `branch`/`prune` can
+    /// authenticate. (HTTP-only for now; TLS is a future option.)
+    struct Plant: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Plant the trunk — run the controller (foreground).")
+
+        @Option(name: .long, help: "Controller data directory (state + accounts persist here).")
+        var dataDir: String = Tree.dataDir
+
+        func run() async throws {
+            try await Tree.requireOrchard()
+            try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
+            printErr(ANSI.green("🕳  digging a hole…"))
+            printErr(ANSI.green("🌱  planting the trunk…") + ANSI.dim("   (Ctrl-C to stop)"))
+            printErr(ANSI.dim("    data: \(dataDir)\n"))
+
+            let tokenFile = Tree.adminTokenFile
+            let code = try await Shell.runStreaming(
+                "orchard",
+                ["controller", "run", "--insecure-no-tls", "--insecure-ssh-no-client-auth", "--data-dir", dataDir],
+                onLine: { line in
+                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                    let clean = Tree.stripANSI(line)
+                    if let r = clean.range(of: "Service account token:") {
+                        let tok = clean[r.upperBound...].trimmingCharacters(in: .whitespaces)
+                        if !tok.isEmpty { try? tok.write(toFile: tokenFile, atomically: true, encoding: .utf8) }
+                    }
+                }
+            )
+            if code != 0 { throw ExitCode(code) }
+        }
+    }
+
+    /// Graft a branch on: run a worker on THIS Mac that joins the tree. Mints a bootstrap
+    /// token from the trunk (needs you to have planted it here) unless one is passed.
+    struct Branch: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Graft a branch on — run a worker that joins the tree.")
+
+        @Argument(help: "Trunk (controller) URL to join, e.g. http://trunk.local:6120")
+        var url: String
+
+        @Option(name: .long, help: "Bootstrap token (default: mint one — needs the trunk planted here).")
+        var token: String?
+
+        @Option(name: .long, help: "Branch (worker) name (default: this host's name).")
+        var name: String?
+
+        @Option(name: .long, help: "Labels, comma-separated key=value (e.g. hardware=m4max).")
+        var labels: String?
+
+        func run() async throws {
+            try await Tree.requireOrchard()
+            printErr(ANSI.green("🌿  grafting a branch onto \(url)…"))
+            let boot: String
+            if let token { boot = token } else { boot = try await Tree.mintBootstrapToken(url: url) }
+            var args = ["worker", "run", url, "--bootstrap-token", boot]
+            if let name { args += ["--name", name] }
+            if let labels {
+                for kv in labels.split(separator: ",") { args += ["--labels", kv.trimmingCharacters(in: .whitespaces)] }
+            }
+            printErr(ANSI.dim("    branch live — Ctrl-C to drop it.\n"))
+            let code = try await Shell.runStreaming("orchard", args, onLine: { line in
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            })
+            if code != 0 { throw ExitCode(code) }
+        }
+    }
+
+    /// Prune a branch: deregister a worker from the trunk. Needs admin (the stored
+    /// bootstrap-admin token from a local `plant`).
+    struct Prune: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Prune a branch — remove a worker from the tree.")
+
+        @Argument(help: "Branch (worker) name to remove.")
+        var name: String
+
+        @Option(name: .long, help: "Trunk URL (default: the profile's controllerURL).")
+        var url: String?
+
+        @Option(name: .long, help: "Profile to read the trunk URL from (default: active).")
+        var profile: String?
+
+        func run() async throws {
+            try await Tree.requireOrchard()
+            let trunk: String
+            if let url {
+                trunk = url
+            } else {
+                let profileName = try resolveProfileName(profile)
+                guard let u = (try Profiles.load(profileName)).orchard?.controllerURL.absoluteString else {
+                    throw GraftError("profile '\(profileName)' has no trunk URL — pass --url")
+                }
+                trunk = u
+            }
+            let env = try Tree.adminEnv(url: trunk)
+            let result = try await Shell.run("orchard", ["delete", "worker", name], environment: env, timeout: .seconds(20))
+            guard result.succeeded else {
+                throw GraftError("couldn't prune '\(name)': \(result.stderrTrimmed.isEmpty ? result.stdoutTrimmed : result.stderrTrimmed)")
+            }
+            printErr(ANSI.green("✂️  pruned branch '\(name)'"))
+        }
+    }
+
+    /// Mint a worker bootstrap token from the trunk (ensures the worker service account
+    /// exists first). Uses the stored admin token, so the trunk must have been planted here.
+    static func mintBootstrapToken(url: String) async throws -> String {
+        let env = try adminEnv(url: url)
+        _ = try? await Shell.run("orchard", [
+            "create", "service-account", workerAccount,
+            "--roles", "compute:read", "--roles", "compute:write", "--roles", "compute:connect",
+        ], environment: env, timeout: .seconds(20))
+        let result = try await Shell.run("orchard", ["get", "bootstrap-token", workerAccount], environment: env, timeout: .seconds(20))
+        guard result.succeeded, !result.stdoutTrimmed.isEmpty else {
+            throw GraftError("couldn't mint a bootstrap token: \(result.stderrTrimmed.isEmpty ? result.stdoutTrimmed : result.stderrTrimmed)")
+        }
+        return result.stdoutTrimmed
     }
 }
