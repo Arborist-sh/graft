@@ -45,10 +45,22 @@ public struct OrchardProvider: VMProvider {
 
     // MARK: VMProvider
 
-    /// The controller does the real scheduling (and owns Apple's per-host 2-macOS-VM
-    /// limit), so graft doesn't second-guess it — we report the configured ceiling and
-    /// let the controller queue anything that doesn't fit right now.
-    public func capacity(for os: GuestOS) async -> Int { maxVMs }
+    /// How many more VMs graft should ask for right now. We query the controller for
+    /// the fleet's **live free `tart-vms` slots** (what each worker advertises minus
+    /// what's already placed) and cap that at the configured `maxVMs` ceiling — so
+    /// graft sizes its desired-state to real capacity instead of over-asking and
+    /// churning create→pending→timeout→delete cycles (GFT-12). If the controller is
+    /// unreachable we fall back to the static ceiling, so this is never worse than the
+    /// old behavior.
+    ///
+    /// Orchard schedules macOS *and* Linux VMs from the **same** per-host `tart-vms`
+    /// pool, so this returns the shared free-slot count for either `os`. For a
+    /// single-OS fleet (the norm) the planner's per-OS budget is then exact; a mixed
+    /// macOS+Linux fleet could still over-ask, but no worse than the static ceiling did.
+    public func capacity(for os: GuestOS) async -> Int {
+        guard let free = try? await fleetFreeSlots() else { return maxVMs }
+        return min(free, maxVMs)
+    }
 
     public func acquire(image: String, os: GuestOS, mounts: [Mount] = [], network: VMNetwork = .nat) async throws -> RunningVM {
         let name = Self.namePrefix + UUID().uuidString.lowercased()
@@ -129,6 +141,74 @@ public struct OrchardProvider: VMProvider {
             .split(whereSeparator: \.isNewline)
             .compactMap { $0.split(whereSeparator: \.isWhitespace).first.map(String.init) }
             .filter { $0.hasPrefix(namePrefix) }
+    }
+
+    // MARK: Live capacity (GFT-12)
+
+    /// Live free `tart-vms` slots across the fleet: what every **schedulable** worker
+    /// advertises, minus every VM already placed cluster-wide (graft's and anyone
+    /// else's — they all consume host slots). Throws if the controller is unreachable
+    /// so `capacity` can fall back to the static ceiling.
+    ///
+    /// One `get worker` call per worker — the CLI has no bulk resource view — but
+    /// `capacity()` is only consulted at planning time (a few calls per `graft run`),
+    /// never in a hot loop, so the N+1 is fine.
+    func fleetFreeSlots() async throws -> Int {
+        let workers = Self.schedulableWorkers(in: try await runOrchard(["list", "workers"]))
+        guard !workers.isEmpty else { return 0 }
+        var advertised = 0
+        for name in workers {
+            advertised += Self.tartVMSlots(inWorkerDetail: try await runOrchard(["get", "worker", name])) ?? 0
+        }
+        let used = Self.vmCount(in: try await runOrchard(["list", "vms"]))
+        return max(0, advertised - used)
+    }
+
+    /// Run an `orchard` subcommand and return stdout, throwing on a non-zero exit.
+    /// Short timeout: capacity queries shouldn't stall startup on a slow controller.
+    private func runOrchard(_ args: [String], timeout: Duration = .seconds(15)) async throws -> String {
+        let result = try await Shell.run(Self.executable, args, environment: env, timeout: timeout)
+        guard result.succeeded else {
+            throw GraftError("`orchard \(args.joined(separator: " "))` failed: \(Self.message(result))")
+        }
+        return result.stdout
+    }
+
+    /// Names of workers that can take new VMs, from `orchard list workers` table output.
+    /// Columns are space/tab-padded and "Last seen" has internal spaces, but the worker
+    /// name is always the first token and the "Scheduling paused" bool the last — so we
+    /// key off those two and skip the header + any malformed row.
+    static func schedulableWorkers(in listing: String) -> [String] {
+        var names: [String] = []
+        for line in listing.split(whereSeparator: \.isNewline) {
+            let tokens = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard let name = tokens.first, let paused = tokens.last, name != "Name" else { continue }
+            guard paused == "false" || paused == "true" else { continue }   // skip non-row lines
+            if paused == "false" { names.append(name) }
+        }
+        return names
+    }
+
+    /// A worker's advertised `org.cirruslabs.tart-vms` count, parsed from the Resources
+    /// block of `orchard get worker <name>` (the per-host VM ceiling Apple's 2-macOS
+    /// limit is encoded as). nil if the field is absent.
+    static func tartVMSlots(inWorkerDetail detail: String) -> Int? {
+        for line in detail.split(whereSeparator: \.isNewline) {
+            guard let r = line.range(of: "org.cirruslabs.tart-vms:") else { continue }
+            let digits = line[r.upperBound...].drop { $0 == " " || $0 == "\t" }.prefix { $0.isNumber }
+            return Int(digits)
+        }
+        return nil
+    }
+
+    /// Count of VMs currently on the controller (all of them — every Tart VM consumes a
+    /// host slot), from `orchard list vms` table output. Header row excluded.
+    static func vmCount(in listing: String) -> Int {
+        listing
+            .split(whereSeparator: \.isNewline)
+            .compactMap { $0.split(whereSeparator: \.isWhitespace).first.map(String.init) }
+            .filter { $0 != "Name" }
+            .count
     }
 
     // MARK: Argument building (pure — unit-tested)

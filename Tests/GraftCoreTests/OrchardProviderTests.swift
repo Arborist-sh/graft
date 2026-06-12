@@ -92,18 +92,61 @@ struct OrchardProviderTests {
         #expect(env[OrchardEnv.accountToken] == "secret-token")
     }
 
-    // MARK: capacity
+    // MARK: capacity — live free slots (GFT-12)
 
-    @Test("capacity reports the configured ceiling (controller does the real scheduling)")
-    func capacity() async {
-        let p = Self.provider(maxVMs: 7)
-        #expect(await p.capacity(for: .macOS) == 7)
-        #expect(await p.capacity(for: .linux) == 7)
+    /// A provider pointed at a closed localhost port — `orchard` fails instantly
+    /// (connection refused), so `capacity` exercises its unreachable-controller fallback
+    /// without a 15s network timeout.
+    static func unreachableProvider(maxVMs: Int? = nil) -> OrchardProvider {
+        OrchardProvider(config: OrchardConfig(
+            controllerURL: URL(string: "http://127.0.0.1:1")!,
+            serviceAccount: "graft", token: "t", maxVMs: maxVMs
+        ))
     }
 
-    @Test("capacity defaults to 100 when maxVMs is unset")
-    func capacityDefault() async {
-        #expect(await Self.provider().capacity(for: .macOS) == 100)
+    @Test("capacity falls back to the configured ceiling when the controller is unreachable")
+    func capacityFallback() async {
+        #expect(await Self.unreachableProvider(maxVMs: 7).capacity(for: .macOS) == 7)
+        #expect(await Self.unreachableProvider().capacity(for: .macOS) == 100)   // default ceiling
+    }
+
+    @Test("schedulableWorkers: names of unpaused workers, header + paused skipped")
+    func schedulableWorkers() {
+        let listing = """
+        Name        \tLast seen     \tScheduling paused
+        slate.local \t14 seconds ago\tfalse
+        granite.local\t2 minutes ago \ttrue
+        basalt.local\t5 seconds ago \tfalse
+        """
+        #expect(OrchardProvider.schedulableWorkers(in: listing) == ["slate.local", "basalt.local"])
+        #expect(OrchardProvider.schedulableWorkers(in: "Name\tLast seen\tScheduling paused\n").isEmpty)
+        #expect(OrchardProvider.schedulableWorkers(in: "").isEmpty)
+    }
+
+    @Test("tartVMSlots: parses org.cirruslabs.tart-vms out of the worker Resources block")
+    func tartVMSlots() {
+        let detail = """
+        Name             \tslate.local
+        Scheduling paused\tfalse
+        Resources        \torg.cirruslabs.logical-cores: 12
+                         \torg.cirruslabs.memory-mib: 24576
+                         \torg.cirruslabs.tart-vms: 2
+        Labels           \tnone
+        """
+        #expect(OrchardProvider.tartVMSlots(inWorkerDetail: detail) == 2)
+        #expect(OrchardProvider.tartVMSlots(inWorkerDetail: "Resources\torg.cirruslabs.logical-cores: 8") == nil)
+    }
+
+    @Test("vmCount: counts VM rows in `orchard list vms`, header excluded")
+    func vmCount() {
+        let listing = """
+        Name                                       Created        Image     Status  Restart policy     Assigned worker
+        graft-c8e22de4-8edb-45a8-9253-4c4d448b3c74 12 seconds ago img:latest running Never (0 restarts) slate.local
+        some-other-vm                              1 hour ago     ubuntu    running Never (0 restarts) slate.local
+        """
+        #expect(OrchardProvider.vmCount(in: listing) == 2)   // both VMs consume host slots, not just graft's
+        #expect(OrchardProvider.vmCount(in: "Name Created Image Status\n") == 0)
+        #expect(OrchardProvider.vmCount(in: "") == 0)
     }
 
     // MARK: error message helper
