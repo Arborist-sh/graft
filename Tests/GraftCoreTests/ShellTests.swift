@@ -31,6 +31,17 @@ struct ShellTests {
         #expect(lines.contains("third"))
     }
 
+    @Test("run() returns a fast child's real exit code promptly (no waitUntilExit hang)")
+    func runReturnsFastExitCode() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let ok = try await Shell.run("true")
+        let bad = try await Shell.run("sh", ["-c", "exit 7"])
+        #expect(ok.exitCode == 0)
+        #expect(bad.exitCode == 7)               // real status, read without waitUntilExit
+        #expect(start.duration(to: clock.now) < .seconds(5))   // never hangs on a fast child
+    }
+
     @Test("times out and terminates a hung subprocess instead of blocking forever")
     func timesOut() async throws {
         let clock = ContinuousClock()

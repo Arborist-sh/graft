@@ -100,10 +100,22 @@ public enum Shell {
             }
 
             let (out, err) = await (outData, errData)
-            process.waitUntilExit()
-
+            // Both drains hit EOF, so the child has closed its pipes and is exiting.
+            // Do NOT call `process.waitUntilExit()` here: on a fast-exiting child spawned
+            // via `/usr/bin/env`, Foundation's runloop-based wait can block *forever* even
+            // though the process is already gone — the "stuck on cloning" hang, which the
+            // timeout above can't rescue because it runs before this line. Poll `isRunning`
+            // with a hard 5s cap instead, then read the status only once it's truly done.
+            if !timedOut {
+                var spins = 0
+                while process.isRunning, spins < 500 {
+                    try? await Task.sleep(for: .milliseconds(10))
+                    spins += 1
+                }
+            }
+            let exitCode: Int32 = (timedOut || process.isRunning) ? -1 : process.terminationStatus
             return ShellResult(
-                exitCode: timedOut ? -1 : process.terminationStatus,
+                exitCode: exitCode,
                 stdout: String(decoding: out, as: UTF8.self),
                 stderr: timedOut ? "timed out after \(timeout!)" : String(decoding: err, as: UTF8.self)
             )

@@ -214,7 +214,9 @@ public enum DevCode {
         mkdir -p "$(dirname "$dest")"
         \(clone)
         """
-        let code = try await Shell.runStreaming("ssh", [alias, "bash", "-s"], stdin: script)
+        // BatchMode so the clone can never wedge on an ssh prompt; ConnectTimeout bounds
+        // the connect (the git clone itself is unbounded — large repos take a while).
+        let code = try await Shell.runStreaming("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", alias, "bash", "-s"], stdin: script)
         guard code == 0 else {
             throw GraftError("clone failed (exit \(code)) — check the repo spec and `gh auth status`")
         }
