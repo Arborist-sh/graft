@@ -6,7 +6,7 @@
 </p>
 
 Ephemeral GitHub Actions runners on [Tart](https://tart.run) VMs. An open-source,
-fleet-ready replacement for Tartelet.
+fleet-ready runner manager for macOS and Linux CI.
 
 Each runner boots a fresh macOS or Linux VM, registers with GitHub, runs **exactly
 one job**, then tears itself down. No persistent runners, no state drift, no
@@ -15,10 +15,17 @@ convention.
 
 ## Why
 
-- **Tartelet is effectively abandoned** and hard-caps at 2 runners.
-- Graft scales to any number of runners, respects Apple's constraints, and is
-  designed from day one to swap a local Tart backend for an [Orchard](https://github.com/cirruslabs/orchard)
+- Built for **fleets**: scale to any number of runners across hosts, with Apple's
+  per-host macOS-VM limits respected by construction.
+- **One image, dev and CI** — `graft image build` bakes a golden `.graft` image
+  that backs both `graft dev` (dev *in* the VM over VS Code Remote-SSH) and every
+  ephemeral CI runner, so "works on my machine" stops being a thing.
+- Designed from day one to swap a local Tart backend for an [Orchard](https://github.com/cirruslabs/orchard)
   fleet without touching the runner logic.
+
+Graft owes a lot to [Tartelet](https://github.com/shapehq/tartelet), which pioneered
+the ephemeral-Tart-runner approach on macOS — Graft pushes that idea toward
+multi-host fleets and a shared dev/CI image.
 
 ## Status
 
