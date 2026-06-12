@@ -118,6 +118,59 @@ public struct KeychainSecretStore: SecretStore {
             .sorted()
     }
 
+    // MARK: Orchard service-account token (GFT-11)
+
+    // Stored just like the App PEM — a generic-password item, but under its own service
+    // so the two never collide — keyed by the Orchard service-account name. Keeps the
+    // controller token out of plaintext profile config.
+    public static let orchardTokenService = "graft-orchard-token"
+
+    /// Read the Orchard token for a service account, or nil if none is stored. Non-
+    /// throwing so `graft run`'s provider resolution can fall back cleanly.
+    public func orchardToken(account: String) -> String? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        applySearchScope(to: &query)
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Upsert the Orchard token for a service account (idempotent: delete then add).
+    public func storeOrchardToken(_ token: String, account: String) throws {
+        try removeOrchardToken(account: account)
+        var attributes: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecAttrAccount as String: account,
+            kSecAttrLabel as String: "Graft Orchard token for '\(account)'",
+            kSecValueData as String: Data(token.utf8),
+        ]
+        applyWriteScope(to: &attributes)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else { throw keychainError("write", status) }
+    }
+
+    /// Remove the Orchard token for a service account. No-op if absent.
+    public func removeOrchardToken(account: String) throws {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecAttrAccount as String: account,
+        ]
+        applySearchScope(to: &query)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw keychainError("delete", status)
+        }
+    }
+
     // MARK: Scope plumbing
 
     // The data-protection keychain can't target file-based login/system keychains,

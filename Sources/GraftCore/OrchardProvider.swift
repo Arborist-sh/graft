@@ -1,10 +1,10 @@
 import Foundation
 
 /// Orchard controller env-var names (auth + endpoint), matching the `orchard` CLI.
-enum OrchardEnv {
-    static let url = "ORCHARD_URL"
-    static let accountName = "ORCHARD_SERVICE_ACCOUNT_NAME"
-    static let accountToken = "ORCHARD_SERVICE_ACCOUNT_TOKEN"
+public enum OrchardEnv {
+    public static let url = "ORCHARD_URL"
+    public static let accountName = "ORCHARD_SERVICE_ACCOUNT_NAME"
+    public static let accountToken = "ORCHARD_SERVICE_ACCOUNT_TOKEN"
 }
 
 /// `VMProvider` backed by the `orchard` CLI talking to an Orchard controller — the
@@ -30,7 +30,7 @@ public struct OrchardProvider: VMProvider {
     public init(config: OrchardConfig) {
         self.controllerURL = config.controllerURL.absoluteString
         self.serviceAccount = config.serviceAccount
-        self.token = config.token
+        self.token = config.token ?? ""   // nil → unset; resolved upstream or unused (dev)
         self.maxVMs = config.maxVMs ?? 100
     }
 
@@ -58,8 +58,8 @@ public struct OrchardProvider: VMProvider {
     /// single-OS fleet (the norm) the planner's per-OS budget is then exact; a mixed
     /// macOS+Linux fleet could still over-ask, but no worse than the static ceiling did.
     public func capacity(for os: GuestOS) async -> Int {
-        guard let free = try? await fleetFreeSlots() else { return maxVMs }
-        return min(free, maxVMs)
+        guard let report = try? await report() else { return maxVMs }
+        return min(report.freeSlots, maxVMs)
     }
 
     public func acquire(image: String, os: GuestOS, mounts: [Mount] = [], network: VMNetwork = .nat) async throws -> RunningVM {
@@ -143,25 +143,56 @@ public struct OrchardProvider: VMProvider {
             .filter { $0.hasPrefix(namePrefix) }
     }
 
-    // MARK: Live capacity (GFT-12)
+    // MARK: Fleet report — live capacity (GFT-12) + status surfaces (GFT-11)
 
-    /// Live free `tart-vms` slots across the fleet: what every **schedulable** worker
-    /// advertises, minus every VM already placed cluster-wide (graft's and anyone
-    /// else's — they all consume host slots). Throws if the controller is unreachable
-    /// so `capacity` can fall back to the static ceiling.
-    ///
-    /// One `get worker` call per worker — the CLI has no bulk resource view — but
-    /// `capacity()` is only consulted at planning time (a few calls per `graft run`),
-    /// never in a hot loop, so the N+1 is fine.
-    func fleetFreeSlots() async throws -> Int {
-        let workers = Self.schedulableWorkers(in: try await runOrchard(["list", "workers"]))
-        guard !workers.isEmpty else { return 0 }
-        var advertised = 0
-        for name in workers {
-            advertised += Self.tartVMSlots(inWorkerDetail: try await runOrchard(["get", "worker", name])) ?? 0
+    /// A worker as the controller sees it: its name, whether scheduling is paused, and
+    /// the `tart-vms` slots it advertises (the per-host VM ceiling).
+    public struct OrchardWorker: Sendable, Equatable {
+        public let name: String
+        public let paused: Bool
+        public let slots: Int
+        public init(name: String, paused: Bool, slots: Int) {
+            self.name = name; self.paused = paused; self.slots = slots
         }
-        let used = Self.vmCount(in: try await runOrchard(["list", "vms"]))
-        return max(0, advertised - used)
+    }
+
+    /// A live snapshot of the fleet: workers (with advertised slots), how many VMs are
+    /// placed cluster-wide, and which of those are graft's. Backs both `capacity()` and
+    /// the `graft orchard status|workers` surfaces.
+    public struct FleetReport: Sendable {
+        public let controllerURL: String
+        public let workers: [OrchardWorker]
+        public let usedVMs: Int
+        public let graftVMNames: [String]
+        /// Slots advertised by the workers that can actually take a VM right now.
+        public var totalSlots: Int { workers.filter { !$0.paused }.reduce(0) { $0 + $1.slots } }
+        /// Free `tart-vms` slots across the fleet: advertised minus every VM already
+        /// placed (graft's and anyone else's — they all consume host slots).
+        public var freeSlots: Int { max(0, totalSlots - usedVMs) }
+    }
+
+    /// Query the controller for a live fleet snapshot. One `get worker` call per worker
+    /// — the CLI has no bulk resource view — but the callers (`capacity()` at planning
+    /// time, `graft orchard status`) are not hot loops, so the N+1 is fine. Throws if
+    /// the controller is unreachable so `capacity` can fall back to the static ceiling.
+    public func report() async throws -> FleetReport {
+        let workersRaw = try await runOrchard(["list", "workers"])
+        var workers: [OrchardWorker] = []
+        for (name, paused) in Self.workerRows(in: workersRaw) {
+            let slots = Self.tartVMSlots(inWorkerDetail: try await runOrchard(["get", "worker", name])) ?? 0
+            workers.append(OrchardWorker(name: name, paused: paused, slots: slots))
+        }
+        let vmsRaw = try await runOrchard(["list", "vms"])
+        return FleetReport(
+            controllerURL: controllerURL, workers: workers,
+            usedVMs: Self.vmCount(in: vmsRaw), graftVMNames: Self.graftVMNames(in: vmsRaw)
+        )
+    }
+
+    /// Raw `orchard list <resource>` table output (e.g. for `graft orchard vms`), so the
+    /// command surface can pass the controller's own formatting straight through.
+    public func rawList(_ resource: String) async throws -> String {
+        try await runOrchard(["list", resource])
     }
 
     /// Run an `orchard` subcommand and return stdout, throwing on a non-zero exit.
@@ -174,19 +205,27 @@ public struct OrchardProvider: VMProvider {
         return result.stdout
     }
 
-    /// Names of workers that can take new VMs, from `orchard list workers` table output.
+    /// `(name, paused)` for every worker row in `orchard list workers` table output.
     /// Columns are space/tab-padded and "Last seen" has internal spaces, but the worker
     /// name is always the first token and the "Scheduling paused" bool the last — so we
     /// key off those two and skip the header + any malformed row.
-    static func schedulableWorkers(in listing: String) -> [String] {
-        var names: [String] = []
+    static func workerRows(in listing: String) -> [(name: String, paused: Bool)] {
+        var rows: [(String, Bool)] = []
         for line in listing.split(whereSeparator: \.isNewline) {
             let tokens = line.split(whereSeparator: \.isWhitespace).map(String.init)
-            guard let name = tokens.first, let paused = tokens.last, name != "Name" else { continue }
-            guard paused == "false" || paused == "true" else { continue }   // skip non-row lines
-            if paused == "false" { names.append(name) }
+            guard let name = tokens.first, let last = tokens.last, name != "Name" else { continue }
+            switch last {
+            case "false": rows.append((name, false))
+            case "true": rows.append((name, true))
+            default: continue   // skip non-row lines (header, blanks)
+            }
         }
-        return names
+        return rows
+    }
+
+    /// Names of workers that can take new VMs (not scheduling-paused).
+    static func schedulableWorkers(in listing: String) -> [String] {
+        workerRows(in: listing).filter { !$0.paused }.map(\.name)
     }
 
     /// A worker's advertised `org.cirruslabs.tart-vms` count, parsed from the Resources

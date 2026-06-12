@@ -112,13 +112,16 @@ public struct OrchardConfig: Codable, Sendable {
     public var controllerURL: URL
     /// Service account the controller authenticates graft as (needs VM compute rights).
     public var serviceAccount: String
-    /// Service account token. Resolved from config today; Keychain-backed later.
-    public var token: String
+    /// Service-account token. Optional: when nil it's resolved from the Keychain
+    /// (`graft orchard init` stores it there, keyed by `serviceAccount`), so it never
+    /// has to sit in plaintext config. An unsecured local `orchard dev` controller
+    /// ignores it entirely. See `Run.makeProvider` for the resolution order.
+    public var token: String?
     /// Cluster-wide ceiling graft fills toward. The controller does the real scheduling
     /// (incl. Apple's per-host 2-macOS-VM limit); this only bounds graft's ask. Default 100.
     public var maxVMs: Int?
 
-    public init(controllerURL: URL, serviceAccount: String, token: String, maxVMs: Int? = nil) {
+    public init(controllerURL: URL, serviceAccount: String, token: String? = nil, maxVMs: Int? = nil) {
         self.controllerURL = controllerURL
         self.serviceAccount = serviceAccount
         self.token = token
@@ -232,7 +235,8 @@ extension GraftConfig {
         case "orchard":
             if let orchard {
                 if orchard.serviceAccount.isEmpty { problems.append("orchard: serviceAccount is empty") }
-                if orchard.token.isEmpty { problems.append("orchard: token is empty") }
+                // token is intentionally not required here — it may be Keychain-backed
+                // (resolved at run time) or unused by an unsecured local `orchard dev`.
             } else {
                 problems.append("provider is 'orchard' but no orchard config provided")
             }

@@ -159,6 +159,10 @@ graft image list / rm / prune / push / pull / template   Manage images (prune cl
 graft dev [<repo>|<box>|.] [--code]     Dev box: clone a repo / resume a box / mount '.' (docs/dev-boxes.md)
 graft dev ls / rm [box]                 List / remove dev boxes
 
+graft orchard dev                       Run a local Orchard controller + worker (foreground)
+graft orchard init [--local]            Point a profile at an Orchard controller (token → Keychain)
+graft orchard status / workers / vms    Inspect the multi-host fleet (free slots, workers, VMs)
+
 graft vm create <image> [--os macos|linux]   Clone + boot a VM, print name<TAB>ip
 graft vm delete <name>                  Stop + destroy a VM
 graft vm list [--all]                   List graft-managed (or all) VMs

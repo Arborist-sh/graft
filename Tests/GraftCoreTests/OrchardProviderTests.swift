@@ -137,6 +137,44 @@ struct OrchardProviderTests {
         #expect(OrchardProvider.tartVMSlots(inWorkerDetail: "Resources\torg.cirruslabs.logical-cores: 8") == nil)
     }
 
+    @Test("workerRows: (name, paused) for each worker row, header skipped")
+    func workerRows() {
+        let listing = """
+        Name        \tLast seen     \tScheduling paused
+        slate.local \t14 seconds ago\tfalse
+        granite.local\t2 minutes ago \ttrue
+        """
+        let rows = OrchardProvider.workerRows(in: listing)
+        #expect(rows.count == 2)
+        #expect(rows[0] == (name: "slate.local", paused: false))
+        #expect(rows[1] == (name: "granite.local", paused: true))
+    }
+
+    @Test("FleetReport: free slots = unpaused advertised − used; paused workers don't count")
+    func fleetReportArithmetic() {
+        let report = OrchardProvider.FleetReport(
+            controllerURL: "http://127.0.0.1:6120",
+            workers: [
+                .init(name: "a", paused: false, slots: 2),
+                .init(name: "b", paused: false, slots: 2),
+                .init(name: "c", paused: true, slots: 2),   // paused → excluded
+            ],
+            usedVMs: 1,
+            graftVMNames: ["graft-1"]
+        )
+        #expect(report.totalSlots == 4)        // a + b, not c
+        #expect(report.freeSlots == 3)         // 4 − 1 used
+    }
+
+    @Test("FleetReport: free slots floors at 0 when over-subscribed")
+    func fleetReportFloor() {
+        let report = OrchardProvider.FleetReport(
+            controllerURL: "x", workers: [.init(name: "a", paused: false, slots: 2)],
+            usedVMs: 5, graftVMNames: []
+        )
+        #expect(report.freeSlots == 0)
+    }
+
     @Test("vmCount: counts VM rows in `orchard list vms`, header excluded")
     func vmCount() {
         let listing = """
@@ -189,13 +227,18 @@ struct OrchardConfigTests {
         #expect(cfg.validate().contains { $0.contains("no orchard config") })
     }
 
-    @Test("orchard provider with empty serviceAccount/token is flagged")
-    func emptyCreds() {
+    @Test("orchard provider with empty serviceAccount is flagged")
+    func emptyServiceAccount() {
         let oc = OrchardConfig(controllerURL: URL(string: "https://c:6120")!, serviceAccount: "", token: "")
         let cfg = GraftConfig(provider: "orchard", pools: [samplePool()], orchard: oc)
-        let problems = cfg.validate()
-        #expect(problems.contains { $0.contains("serviceAccount is empty") })
-        #expect(problems.contains { $0.contains("token is empty") })
+        #expect(cfg.validate().contains { $0.contains("serviceAccount is empty") })
+    }
+
+    @Test("orchard token is optional (Keychain-backed / unsecured dev) — not a validation problem")
+    func tokenOptional() {
+        let oc = OrchardConfig(controllerURL: URL(string: "https://c:6120")!, serviceAccount: "graft", token: nil)
+        let cfg = GraftConfig(provider: "orchard", pools: [samplePool()], orchard: oc)
+        #expect(cfg.validate().isEmpty)
     }
 
     @Test("an unknown provider is rejected")

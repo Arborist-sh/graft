@@ -90,8 +90,15 @@ struct Run: AsyncParsableCommand {
         case "tart":
             return LocalTartProvider()
         case "orchard":
-            guard let orchard = cfg.orchard else {
+            guard var orchard = cfg.orchard else {
                 throw GraftError("provider is 'orchard' but no 'orchard' config block provided")
+            }
+            // Token resolution: explicit config value wins; otherwise pull it from the
+            // Keychain (where `graft orchard init` stashes it) so it's not in plaintext.
+            // Left empty for an unsecured local `orchard dev`, which ignores auth.
+            if (orchard.token ?? "").isEmpty {
+                let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
+                orchard.token = KeychainSecretStore(scope: scope).orchardToken(account: orchard.serviceAccount)
             }
             return OrchardProvider(config: orchard)
         default:
