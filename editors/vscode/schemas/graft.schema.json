@@ -5,46 +5,71 @@
   "required": ["name", "from"],
   "additionalProperties": false,
   "properties": {
-    "name": {
-      "type": "string",
-      "description": "The local image name produced by the build."
+    "name": { "type": "string", "description": "The local image name produced by the build." },
+    "from": { "type": "string", "description": "Base Tart image to clone, e.g. ghcr.io/cirruslabs/macos-sequoia-xcode:latest" },
+
+    "xcode": { "type": ["string", "number"], "description": "Select active Xcode → sudo xcodes select <version>." },
+    "node": { "type": ["string", "number"], "description": "Node version — fnm install/default + corepack + a stable /usr/local/bin node symlink. Quote bare majors (\"20\")." },
+    "ruby": { "type": ["string", "number"], "description": "Ruby version — rbenv install + global + shims + bundler." },
+    "python": { "type": ["string", "number"], "description": "Python version — pyenv install + global + pip upgrade." },
+    "java": { "type": ["string", "number"], "description": "OpenJDK major version — brew install openjdk@<v> + JavaVirtualMachines symlink." },
+    "go": { "type": "boolean", "description": "Install Go (brew install go)." },
+    "rust": { "type": "string", "description": "Rust toolchain — rustup toolchain install + default (e.g. stable)." },
+    "package-manager": { "type": "string", "enum": ["pnpm", "yarn", "bun"], "description": "JS package manager. pnpm/yarn via corepack; bun via brew." },
+    "brew": { "type": "array", "items": { "type": "string" }, "description": "Homebrew formulae to install." },
+    "cocoapods": { "type": ["string", "number"], "description": "CocoaPods version — gem install cocoapods -v <v>." },
+    "fastlane": { "type": "boolean", "description": "Install fastlane (gem install fastlane)." },
+    "gems": { "type": "array", "items": { "type": "string" }, "description": "RubyGems to install (gem install … --no-document)." },
+    "npm": { "type": "array", "items": { "type": "string" }, "description": "Global npm packages (npm install -g …)." },
+    "xcode-first-launch": { "type": "boolean", "description": "Run sudo xcodebuild -runFirstLaunch to install Xcode components headlessly." },
+    "simulator-runtimes": { "type": "array", "items": { "type": "string" }, "description": "Download simulator runtimes by platform (xcodebuild -downloadPlatform). E.g. [\"iOS 26\"]." },
+    "warm-simulators": { "type": "array", "items": { "type": "string" }, "description": "Simulator devices to cold-boot once (warms on-disk caches), then shut down. E.g. [\"iPhone 17 Pro\"]." },
+
+    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables — exported for the build + persisted to /etc/zshenv." },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "user": { "type": "string" }, "email": { "type": "string" } },
+      "description": "Global git identity (git config --global)."
     },
-    "from": {
-      "type": "string",
-      "description": "Base Tart image to clone, e.g. ghcr.io/cirruslabs/macos-sequoia-xcode:latest"
-    },
-    "node": {
-      "type": ["string", "number"],
-      "description": "Node version — expands to fnm install/default + corepack + a stable /usr/local/bin node symlink. Quote bare majors (\"20\")."
-    },
-    "ruby": {
-      "type": ["string", "number"],
-      "description": "Ruby version — expands to rbenv install + global + bundler."
-    },
-    "brew": {
+    "known-hosts": { "type": "array", "items": { "type": "string" }, "description": "Pre-seed SSH host keys via ssh-keyscan into ~/.ssh/known_hosts." },
+    "write": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Files to write into the guest, keyed by path (contents as the value)." },
+    "timezone": { "type": "string", "description": "Set the timezone (systemsetup -settimezone)." },
+    "hostname": { "type": "string", "description": "Set HostName/LocalHostName/ComputerName." },
+    "disable-spotlight": { "type": "boolean", "description": "Disable Spotlight indexing (mdutil -a -i off)." },
+    "disable-sleep": { "type": "boolean", "description": "Never sleep (pmset -a sleep 0 …)." },
+    "description": { "type": "string", "description": "Image description, baked to /etc/graft-image." },
+    "labels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Arbitrary metadata, baked to /etc/graft-image." },
+
+    "pod-repo-warm": { "type": "boolean", "description": "Warm the CocoaPods spec repo (pod repo update / setup)." },
+    "prefetch": { "type": "array", "items": { "type": "string" }, "description": "Cache-warming commands, run in the repo mount dir." },
+    "repos": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "Homebrew formulae to install."
+      "description": "Clone repos into the guest to warm global caches (yarn/CocoaPods/bundler), then discard the source. No source is baked.",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string", "description": "Git URL (ssh or https)." },
+          "ref": { "type": "string", "description": "Branch or tag to clone (shallow; SHAs not supported)." },
+          "run": {
+            "description": "Install commands run in the clone to warm caches.",
+            "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
+          },
+          "ssh-key": { "type": "string", "description": "Guest path to an SSH key for private clones (e.g. a read-only mounted key — mounts are not baked into the image)." }
+        }
+      }
     },
-    "gems": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "RubyGems to install (gem install … --no-document)."
-    },
-    "npm": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "Global npm packages (npm install -g …)."
-    },
-    "xcode-first-launch": {
-      "type": "boolean",
-      "description": "Run `sudo xcodebuild -runFirstLaunch` to install Xcode components headlessly."
-    },
-    "warm-simulators": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "Simulator devices to cold-boot once (warms on-disk caches), then shut down. E.g. [\"iPhone 17 Pro\"]."
-    },
+
+    "verify": { "type": "array", "items": { "type": "string" }, "description": "Assertions run at the end — each must exit 0 or the build fails." },
+    "cleanup": { "type": "boolean", "description": "brew cleanup + clear caches at the end (smaller image)." },
+
+    "cpu": { "type": "integer", "description": "CPU count for the baked image (tart set --cpu)." },
+    "memory": { "type": "integer", "description": "Memory in megabytes (tart set --memory)." },
+    "disk": { "type": "integer", "description": "Disk size in GB, grow-only (tart set --disk-size)." },
+    "display": { "type": "string", "description": "Display resolution WIDTHxHEIGHT (tart set --display)." },
+
     "run": {
       "description": "Escape hatch: raw bash. A `|` block (one script) or a list of steps. Runs after the declarative fields.",
       "oneOf": [
@@ -52,15 +77,9 @@
         { "type": "array", "items": { "type": "string" } }
       ]
     },
-    "script": {
-      "type": "string",
-      "description": "Path (relative to this recipe) to a shell script run in the guest. Runs before `run`."
-    },
-    "os": {
-      "type": "string",
-      "enum": ["macos", "linux"],
-      "description": "Guest OS (default macos)."
-    },
+    "script": { "type": "string", "description": "Path (relative to this recipe) to a shell script run in the guest. Runs before run." },
+    "os": { "type": "string", "enum": ["macos", "linux"], "description": "Guest OS (default macos)." },
+    "network": { "type": "string", "description": "VM networking: nat (default), bridged:<iface> (e.g. behind Zscaler), or softnet." },
     "mounts": {
       "type": "array",
       "description": "Host directories shared into the build VM.",

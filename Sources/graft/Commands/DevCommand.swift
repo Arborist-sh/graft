@@ -27,6 +27,9 @@ struct Dev: AsyncParsableCommand {
     @Flag(help: "Throwaway VM: fresh clone, deleted on exit (default: persistent).")
     var ephemeral = false
 
+    @Option(name: .long, help: "VM networking: nat (default), bridged:<iface> (e.g. behind Zscaler), or softnet.")
+    var network: String?
+
     @Argument(parsing: .postTerminator, help: "Command after `--` to run in the VM (default: interactive shell).")
     var command: [String] = []
 
@@ -59,9 +62,10 @@ struct Dev: AsyncParsableCommand {
             printErr("cloning \(img) → \(vmName)…")
             try await Tart.clone(image: img, to: vmName)
         }
+        let net = try network.map { try VMNetwork(spec: $0) } ?? .nat
         if existing?.isRunning != true {
             printErr("booting \(vmName)…")
-            try Tart.run(name: vmName, mounts: mounts)
+            try Tart.run(name: vmName, mounts: mounts, network: net)
             try await provider.waitForGuest(RunningVM(name: vmName, ip: "", os: .macOS), timeout: .seconds(120))
         } else if !mount.isEmpty || !noRepo {
             printErr("(reattaching to running \(vmName) — using the mounts it booted with)")

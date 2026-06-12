@@ -8,7 +8,7 @@ struct Image: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "image",
         abstract: "Build and manage Tart images.",
-        subcommands: [Build.self, Render.self, List.self, Remove.self, Push.self, Pull.self, Template.self]
+        subcommands: [Build.self, Render.self, List.self, Remove.self, Prune.self, Push.self, Pull.self, Template.self]
     )
 }
 
@@ -36,14 +36,7 @@ extension Image {
 
         func run() async throws {
             var recipe = try ImageRecipe.load(from: file)
-            if let name {
-                recipe = ImageRecipe(
-                    name: name, from: recipe.from,
-                    node: recipe.node, ruby: recipe.ruby, brew: recipe.brew, gems: recipe.gems,
-                    npm: recipe.npm, xcodeFirstLaunch: recipe.xcodeFirstLaunch, warmSimulators: recipe.warmSimulators,
-                    run: recipe.run, script: recipe.script, mounts: recipe.mounts, os: recipe.os
-                )
-            }
+            if let name { recipe.name = name }
 
             let scriptBody = try recipeScriptBody(recipe, recipeFile: file)
             printErr("building image '\(recipe.name)' from \(recipe.from)…\n")
@@ -92,6 +85,26 @@ extension Image {
             guard try await Tart.exists(name: name) else { throw GraftError("no image named '\(name)'") }
             try await Tart.delete(name: name)
             printErr("✓ removed '\(name)'")
+        }
+    }
+
+    struct Prune: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Remove leftover throwaway build VMs from failed builds.")
+
+        @Flag(help: "Also remove *running* build VMs — may kill an in-progress build.")
+        var force = false
+
+        func run() async throws {
+            let temps = (try? await Tart.list())?.filter { ImageBuilder.isOrphanTemp($0.name) } ?? []
+            guard !temps.isEmpty else { printErr("no orphaned build VMs"); return }
+            // Skip running temps by default — a running graft-imgbuild is most likely an
+            // active build, not a leftover.
+            let removed = await ImageBuilder().sweepOrphans(includeRunning: force)
+            printErr("✓ pruned \(removed.count) orphaned build VM(s)")
+            let skipped = temps.filter { $0.isRunning && !removed.contains($0.name) }
+            if !skipped.isEmpty {
+                printErr("⚠ skipped \(skipped.count) running build VM(s) (likely an active build) — `graft image prune --force` to remove: \(skipped.map(\.name).joined(separator: ", "))")
+            }
         }
     }
 

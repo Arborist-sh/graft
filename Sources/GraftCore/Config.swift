@@ -86,14 +86,18 @@ public struct PoolConfig: Codable, Sendable {
     /// Host directory shares mounted into each runner VM (e.g. read-only warm caches).
     /// Absent (nil) → no mounts. See docs/images-and-caching.md for the strategy.
     public var mounts: [Mount]?
+    /// VM networking mode for this pool's runners. Absent (nil) → shared NAT. Set
+    /// `bridged:<iface>` on hosts where NAT is blocked (e.g. behind Zscaler).
+    public var network: VMNetwork?
 
-    public init(name: String, image: String, os: GuestOS, count: Int, github: GitHubConfig, mounts: [Mount]? = nil) {
+    public init(name: String, image: String, os: GuestOS, count: Int, github: GitHubConfig, mounts: [Mount]? = nil, network: VMNetwork? = nil) {
         self.name = name
         self.image = image
         self.os = os
         self.count = count
         self.github = github
         self.mounts = mounts
+        self.network = network
     }
 
     /// Labels for runners in this pool — explicit config or the computed default.

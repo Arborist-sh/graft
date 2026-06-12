@@ -29,6 +29,7 @@ convention.
 | Keychain secret store (login + system) | ✅ working (cross-process read needs ACL hardening) |
 | `tart exec` provisioning + runner loop | ✅ built (runner download unverified on a live VM) |
 | Pool supervisor + state + daemon | ✅ built & unit-tested |
+| Image builder + `graft dev` + `.graft` recipes | ✅ built & tested (real image baked end-to-end) |
 | Orchard multi-host backend | ⬜ planned |
 
 Built and driven through end-to-end; the parts that need real GitHub credentials or
@@ -140,8 +141,8 @@ graft pool list [--profile NAME]
 
 graft image build -f <recipe.graft>     Build a golden image (declarative toolchain)
 graft image render -f <recipe.graft>    Preview the compiled provisioning script
-graft image list / rm / push / pull / template     Manage images
-graft dev [--image N] [--ephemeral] [-- CMD]       Local dev VM with your repo mounted
+graft image list / rm / prune / push / pull / template   Manage images (prune clears orphaned build VMs)
+graft dev [--image N] [--ephemeral] [--network bridged:en0] [-- CMD]   Local dev VM with your repo mounted
 
 graft vm create <image> [--os macos|linux]   Clone + boot a VM, print name<TAB>ip
 graft vm delete <name>                  Stop + destroy a VM
@@ -168,10 +169,15 @@ environments. Tart clones are APFS copy-on-write, so baked caches cost nothing p
 runner. See **[docs/images-and-caching.md](docs/images-and-caching.md)** for recipes,
 the CoW caching strategy, and host-mount safety (read-only for shared caches).
 
-A recipe is a declarative **`.graft`** file (YAML with toolchain fields) — `node: "20"`,
-`ruby: "3.3.5"`, `brew: [...]`, `xcode-first-launch: true`, etc. expand into the right
-provisioning steps (incl. the stable `/usr/local/bin` node symlink Xcode needs). Drop to
-a `run:` block for anything custom.
+A recipe is a declarative **`.graft`** file (YAML). Fields compile into the right
+provisioning, grouped: **toolchain** (`node`, `ruby`, `python`, `cocoapods`, `xcode`,
+`fastlane`, …), **system config** (`env`, `known-hosts`, `disable-spotlight`, `git`, …),
+**cache warming** (`prefetch`; `repos:` clones a repo to warm global caches then discards
+the source — no source baked), **verification** (`verify:`), and **VM shape**
+(`cpu`/`memory`/`disk`). `network: bridged:<iface>` covers hosts where the default NAT is
+blocked (e.g. behind Zscaler). Drop to a `run:` block or `script:` for anything custom.
+`graft image template` prints a starter; the full field reference is in
+[docs/images-and-caching.md](docs/images-and-caching.md).
 
 ```sh
 graft image render -f examples/images/rn-detox.graft  # preview the compiled script
@@ -212,7 +218,7 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 - `--unsafe-unrestricted-quota` (kernel boot-arg override, SIP off, opt-in)
 - `Twig`: native `Virtualization.framework` backend
 
-Shipped: ✅ menu-bar app (`Graft.app`)
+Shipped: ✅ menu-bar app (`Graft.app`); ✅ image builder + `graft dev` + `.graft` recipes (toolchain/system/cache-warming/VM-shape fields, bridged networking, repo pre-caching)
 
 ## Install
 

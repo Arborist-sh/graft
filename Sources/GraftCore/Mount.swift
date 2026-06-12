@@ -16,6 +16,16 @@ public struct Mount: Codable, Sendable, Equatable {
         self.readOnly = readOnly
     }
 
+    enum CodingKeys: String, CodingKey { case name, source, readOnly }
+
+    /// `readOnly` is optional in recipes — omit it for the read-write default.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        source = try c.decode(String.self, forKey: .source)
+        readOnly = try c.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+    }
+
     /// Where this mount lands inside a macOS guest.
     public var guestPath: String { "/Volumes/My Shared Files/\(name)" }
 

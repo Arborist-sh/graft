@@ -28,7 +28,7 @@
     },
     "toolchain-key": {
       "comment": "graft's declarative fields",
-      "match": "^(\\s*)(name|from|node|ruby|brew|gems|npm|xcode-first-launch|warm-simulators|script|mounts|os|run)(?=\\s*:)",
+      "match": "^(\\s*)(name|from|xcode|node|ruby|python|java|go|rust|package-manager|brew|cocoapods|fastlane|gems|npm|xcode-first-launch|simulator-runtimes|warm-simulators|env|git|known-hosts|write|timezone|hostname|disable-spotlight|disable-sleep|description|labels|pod-repo-warm|prefetch|repos|verify|cleanup|cpu|memory|disk|display|script|mounts|os|network|run)(?=\\s*:)",
       "captures": {
         "2": { "name": "keyword.control.graft" }
       }

@@ -30,8 +30,11 @@ public enum Tart {
     /// Boot a VM detached so it outlives this process. Returns immediately —
     /// the VM is up but won't have an IP yet; call `waitForIP`. `mounts` become
     /// `--dir` directory shares (single-quoted so paths with spaces are safe).
-    public static func run(name: String, mounts: [Mount] = []) throws {
+    public static func run(name: String, mounts: [Mount] = [], network: VMNetwork = .nat) throws {
         var command = "\(executable) run \(name) --no-graphics"
+        for flag in network.tartFlags {
+            command += " \(flag)"
+        }
         for mount in mounts {
             command += " --dir='\(mount.tartDirArg)'"
         }
@@ -46,6 +49,20 @@ public enum Tart {
 
     public static func delete(name: String) async throws {
         try await Shell.runChecked(executable, ["delete", name], timeout: .seconds(30))
+    }
+
+    /// Apply VM-shape settings to a (stopped) VM/image via `tart set`. Only the provided
+    /// fields are changed. Disk can only grow.
+    public static func set(
+        name: String, cpu: Int? = nil, memory: Int? = nil, diskSize: Int? = nil, display: String? = nil
+    ) async throws {
+        var args = ["set", name]
+        if let cpu { args += ["--cpu", String(cpu)] }
+        if let memory { args += ["--memory", String(memory)] }
+        if let diskSize { args += ["--disk-size", String(diskSize)] }
+        if let display { args += ["--display", display] }
+        guard args.count > 2 else { return }
+        try await Shell.runChecked(executable, args, timeout: .seconds(60))
     }
 
     /// Push a local image to an OCI registry ref. No timeout — uploads can take minutes.

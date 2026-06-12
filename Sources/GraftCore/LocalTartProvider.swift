@@ -28,11 +28,11 @@ public struct LocalTartProvider: VMProvider {
         }
     }
 
-    public func acquire(image: String, os: GuestOS, mounts: [Mount] = []) async throws -> RunningVM {
+    public func acquire(image: String, os: GuestOS, mounts: [Mount] = [], network: VMNetwork = .nat) async throws -> RunningVM {
         let name = Self.namePrefix + UUID().uuidString.lowercased()
         try await Tart.clone(image: image, to: name)
         do {
-            try Tart.run(name: name, mounts: mounts)
+            try Tart.run(name: name, mounts: mounts, network: network)
             let ip = try await Tart.waitForIP(name: name)
             return RunningVM(name: name, ip: ip, os: os)
         } catch {
@@ -50,8 +50,8 @@ public struct LocalTartProvider: VMProvider {
         try await Tart.delete(name: vm.name)
     }
 
-    public func exec(on vm: RunningVM, _ command: [String]) async throws -> ShellResult {
-        try await Shell.run(Tart.executable, ["exec", vm.name] + command)
+    public func exec(on vm: RunningVM, _ command: [String], timeout: Duration? = nil) async throws -> ShellResult {
+        try await Shell.run(Tart.executable, ["exec", vm.name] + command, timeout: timeout)
     }
 
     public func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {

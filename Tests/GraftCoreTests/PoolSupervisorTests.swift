@@ -35,7 +35,7 @@ private struct MockProvider: VMProvider {
 
     func capacity(for os: GuestOS) async -> Int { os == .macOS ? macCapacity : 4 }
 
-    func acquire(image: String, os: GuestOS, mounts: [Mount]) async throws -> RunningVM {
+    func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork) async throws -> RunningVM {
         let name = "graft-mock-" + UUID().uuidString.prefix(8).lowercased()
         await recorder.acquire(name)
         return RunningVM(name: name, ip: "10.0.0.2", os: os)
@@ -48,7 +48,7 @@ private struct MockProvider: VMProvider {
         try? await Task.sleep(for: .milliseconds(30))
         await recorder.releaseEnd(vm.name)
     }
-    func exec(on vm: RunningVM, _ command: [String]) async throws -> ShellResult {
+    func exec(on vm: RunningVM, _ command: [String], timeout: Duration?) async throws -> ShellResult {
         ShellResult(exitCode: 0, stdout: "", stderr: "")
     }
     func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 { 0 }

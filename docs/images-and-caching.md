@@ -43,6 +43,113 @@ full field reference.
 Reference the image from a pool (`"image": "rn-detox"`) or `graft dev --image
 rn-detox`.
 
+### Recipe field reference
+
+Everything runs in **one guest shell**, in this order:
+`env → toolchain → system config → script → run → prefetch → verify → cleanup`.
+VM-shape fields are applied to the finished image with `tart set`. Run `graft image
+template` for a starter, or hover any field in the VS Code extension.
+
+**Toolchain** (installed in this order — version managers are installed if missing):
+
+| Field | Type | Compiles to |
+|---|---|---|
+| `xcode` | version | `sudo xcodes select <v>` |
+| `node` | version | `fnm install/use/default` + `corepack` + stable `/usr/local/bin` symlink |
+| `ruby` | version | `rbenv install/global` + shims + `bundler` |
+| `python` | version | `pyenv install/global` + `pip` upgrade |
+| `java` | version | `brew install openjdk@<v>` + JavaVirtualMachines symlink |
+| `go` | boolean | `brew install go` |
+| `rust` | toolchain | `rustup toolchain install` + `default` (e.g. `stable`) |
+| `package-manager` | `pnpm`\|`yarn`\|`bun` | corepack (pnpm/yarn) or brew (bun) |
+| `brew` | string[] | `brew install …` |
+| `cocoapods` | version | `gem install cocoapods -v <v>` (pair with `ruby:`) |
+| `fastlane` | boolean | `gem install fastlane` |
+| `gems` | string[] | `gem install … --no-document` |
+| `npm` | string[] | `npm install -g …` |
+| `xcode-first-launch` | boolean | `sudo xcodebuild -runFirstLaunch` |
+| `simulator-runtimes` | string[] | `xcodebuild -downloadPlatform <platform>` (e.g. `["iOS 26"]`) |
+| `warm-simulators` | string[] | cold-boot each once to warm caches, then shut down |
+
+**System config** (baked into the image):
+
+| Field | Type | Compiles to |
+|---|---|---|
+| `env` | map | export now + persist to `/etc/zshenv` (runner shells inherit) |
+| `git` | `{user, email}` | `git config --global user.name/.email` |
+| `known-hosts` | string[] | `ssh-keyscan` → `~/.ssh/known_hosts` (no clone prompts) |
+| `write` | map (path→contents) | write config files into the guest (`.npmrc`, `.gemrc`, …) |
+| `timezone` | string | `systemsetup -settimezone` |
+| `hostname` | string | `scutil --set HostName/LocalHostName/ComputerName` |
+| `disable-spotlight` | boolean | `mdutil -a -i off` (CI perf) |
+| `disable-sleep` | boolean | `pmset -a sleep 0 …` (long jobs) |
+| `description` / `labels` | string / map | metadata baked to `/etc/graft-image` |
+
+**Cache warming, verify, hygiene:**
+
+| Field | Type | Compiles to |
+|---|---|---|
+| `pod-repo-warm` | boolean | `pod repo update` / `pod setup` |
+| `prefetch` | string[] | commands run in the `repo` mount dir (bundle/yarn/pod install → baked in) |
+| `repos` | list | clone repos into the guest, warm global caches, discard the source (see below) |
+| `verify` | string[] | each must exit 0 at the end, or the build fails |
+| `cleanup` | boolean | `brew cleanup` + clear caches → smaller image |
+
+**VM shape** (via `tart set`, inherited by every clone):
+
+| Field | Type | Compiles to |
+|---|---|---|
+| `cpu` | int | `tart set --cpu` |
+| `memory` | int (MB) | `tart set --memory` |
+| `disk` | int (GB) | `tart set --disk-size` (grow-only) |
+| `display` | `WxH` | `tart set --display` |
+
+**Escape hatches:** `script` (a file, runs before `run`), `run` (a `|` block or list),
+`mounts` (host dirs shared during the build), `os` (`macos`\|`linux`), `network`
+(`nat` default, `bridged:<iface>`, or `softnet`).
+
+> **Networking behind a corporate proxy (Zscaler etc.):** the default shared NAT can be
+> blocked or mangled. Set `network: bridged:en0` (your active interface — `tart run
+> --net-bridged=list` lists them) to put the VM directly on the LAN. The same applies to
+> a runner pool (`network: bridged:en0` in the pool config) and `graft dev --network
+> bridged:en0`.
+
+### Pre-caching repos (`repos:`) — warm caches, no workflow changes
+
+A runner job runs `actions/checkout`, which clones into `$GITHUB_WORKSPACE`
+(`_work/<repo>/<repo>`) — **not** wherever the image baked anything. So a baked working
+tree at, say, `~/app` does *not* link to the job. What **does** transfer is the
+**global package-manager caches** (yarn/npm download cache, CocoaPods CDN + spec repo,
+bundler gems, SPM): they live in `$HOME`, are path-independent, and the job's normal
+`yarn install` / `pod install` / `bundle install` just hit them — killing the
+network-fetch cost with zero workflow changes.
+
+`repos:` automates exactly that warming: clone → run installs → **discard the working
+tree**, keeping only the warmed `$HOME` caches. No source is baked into the image.
+
+```yaml
+known-hosts: [github.com]                 # so the clone doesn't prompt on the host key
+mounts:
+  - { name: ssh, source: "~/.ssh", readOnly: true }   # credentials — NOT baked (mounts never are)
+repos:
+  - url: git@github.com:your-org/app.git
+    ref: main                             # branch or tag (shallow clone)
+    ssh-key: "/Volumes/My Shared Files/ssh/id_ed25519"   # the mounted key
+    run:
+      - bundle install
+      - yarn install
+      - cd ios && bundle exec pod install
+```
+
+**Private repos:** the build VM needs credentials to clone. Mount your key/credentials
+**read-only** — because mounts are never written into the image, nothing sensitive is
+baked — and point `ssh-key` at the mounted path. (Public repos need neither.)
+
+**Make sure your tools use a *global* cache**, or there's nothing to warm: Yarn Berry
+defaults to a *project-local* `.yarn/cache` (discarded with the source). Force a global
+cache with `env: { YARN_ENABLE_GLOBAL_CACHE: "true" }` (or use yarn classic / bundler's
+default global gem dir / CocoaPods' global CDN cache, which already qualify).
+
 ## Why baking caches is (almost) free: APFS copy-on-write
 
 `tart clone` uses **APFS `clonefile`** — the clone's disk shares the *same physical
