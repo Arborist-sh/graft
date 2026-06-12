@@ -115,3 +115,18 @@ the cluster absorb it.
   useful for paths that exist on the workers.
 - **Networking:** a pool's `network` maps to `--net-bridged <iface>` / `--net-softnet`
   on the worker, same as the local backend.
+
+## Troubleshooting
+
+- **`graft run` acquires a VM but then every runner fails with "guest wasn't ready to
+  exec within 60s", and the controller logs `context deadline exceeded` on
+  `/port-forward`.** Orchard can't reach the VM's SSH port. This is almost always Tart's
+  **default 1-day DHCP lease**, which leaves the worker unable to learn the VM's IP —
+  Orchard warns about it at startup. Fix it per
+  [tart.run/faq → DHCP lease time](https://tart.run/faq/#changing-the-default-dhcp-lease-time),
+  then re-run. (graft is doing the right thing here: it bounds `waitForGuest`, releases
+  the unreachable VM, and re-acquires.)
+- **Verified against Orchard 0.55.0**: `create vm` (with `--os`), `get vm <name>/status`
+  polling, `delete vm`, and `ssh vm --wait` all work. Note graft avoids `list vms
+  --quiet` (added after 0.55.0) and doesn't pass `--restart-policy` (Orchard defaults to
+  `Never`, which is what ephemeral runners want).

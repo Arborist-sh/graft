@@ -99,28 +99,38 @@ public struct OrchardProvider: VMProvider {
 
     /// Delete every graft-managed VM still registered on the controller (by name prefix).
     public func sweepOrphans() async {
+        // Plain `list vms` (no `--quiet`: that flag doesn't exist in older Orchard
+        // releases, e.g. 0.55.0 — using it makes the whole sweep silently no-op). Parse
+        // the VM name out of the first column instead, which works on any version.
         guard let result = try? await Shell.run(
-            Self.executable, ["list", "vms", "--quiet"], environment: env, timeout: .seconds(20)
+            Self.executable, ["list", "vms"], environment: env, timeout: .seconds(20)
         ), result.succeeded else { return }
-        let names = result.stdout
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix(Self.namePrefix) }
-        for name in names {
+        for name in Self.graftVMNames(in: result.stdout) {
             Log.info("sweeping \(name)")
             _ = try? await Shell.run(Self.executable, ["delete", "vm", name], environment: env, timeout: .seconds(30))
         }
+    }
+
+    /// Pull graft's own VM names out of `orchard list vms` table output — the name is the
+    /// first whitespace-delimited column; the `Name` header and other rows are filtered out.
+    static func graftVMNames(in listing: String) -> [String] {
+        listing
+            .split(whereSeparator: \.isNewline)
+            .compactMap { $0.split(whereSeparator: \.isWhitespace).first.map(String.init) }
+            .filter { $0.hasPrefix(namePrefix) }
     }
 
     // MARK: Argument building (pure — unit-tested)
 
     /// The full `orchard create vm …` argv for an ephemeral runner VM.
     static func createArgs(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork) -> [String] {
+        // No --restart-policy: Orchard already defaults to "Never" (never auto-restart),
+        // which is what ephemeral runners want. Passing it is fragile — the API only
+        // accepts the capitalized "Never" and rejects the lowercase form.
         var args = [
             "create", "vm",
             "--image", image,
             "--os", orchardOS(os),
-            "--restart-policy", "never",   // ephemeral: one job, never auto-restart
         ]
         for mount in mounts { args += ["--host-dirs", mount.tartDirArg] }
         args += network.orchardFlags

@@ -15,7 +15,7 @@ struct OrchardProviderTests {
 
     // MARK: create args
 
-    @Test("create args: macOS maps to --os darwin, ephemeral restart policy, name last")
+    @Test("create args: macOS maps to --os darwin, name last, no restart-policy (Orchard defaults to Never)")
     func createArgsMacOS() {
         let args = OrchardProvider.createArgs(
             name: "graft-abc", image: "ghcr.io/org/img:latest", os: .macOS, mounts: [], network: .nat
@@ -24,9 +24,9 @@ struct OrchardProviderTests {
             "create", "vm",
             "--image", "ghcr.io/org/img:latest",
             "--os", "darwin",
-            "--restart-policy", "never",
             "graft-abc",
         ])
+        #expect(!args.contains("--restart-policy"))   // omitted on purpose — Orchard defaults to Never
     }
 
     @Test("create args: linux maps to --os linux")
@@ -61,6 +61,18 @@ struct OrchardProviderTests {
     @Test("VM names carry the graft- prefix so the orphan sweep can find them")
     func namePrefix() {
         #expect(OrchardProvider.namePrefix == "graft-")
+    }
+
+    @Test("graftVMNames parses graft's own VMs out of the `orchard list vms` table")
+    func graftVMNamesParsing() {
+        let listing = """
+        Name                                       Created        Image                                       Status  Restart policy     Assigned worker
+        graft-c8e22de4-8edb-45a8-9253-4c4d448b3c74 12 seconds ago ghcr.io/cirruslabs/macos-tahoe-xcode:latest running Never (0 restarts) slate.local
+        some-other-vm                              1 hour ago     ubuntu:latest                               running Never (0 restarts) slate.local
+        """
+        #expect(OrchardProvider.graftVMNames(in: listing) == ["graft-c8e22de4-8edb-45a8-9253-4c4d448b3c74"])
+        #expect(OrchardProvider.graftVMNames(in: "Name Created Image Status\n").isEmpty)   // header only
+        #expect(OrchardProvider.graftVMNames(in: "").isEmpty)
     }
 
     // MARK: env injection
