@@ -42,6 +42,19 @@ struct ShellTests {
         #expect(start.duration(to: clock.now) < .seconds(5))   // never hangs on a fast child
     }
 
+    @Test("run() gives the child /dev/null stdin so a stdin-reading command can't hang on an inherited TTY")
+    func runStdinIsNullDevice() async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        // `cat` with no args reads stdin to EOF. If it inherited a controlling terminal
+        // it would block forever (the bug that hung `orchard ssh` under interactive
+        // `graft run`); with /dev/null stdin it sees immediate EOF and exits empty.
+        let result = try await Shell.run("cat")
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.isEmpty)
+        #expect(start.duration(to: clock.now) < .seconds(5))   // returned promptly, didn't hang on stdin
+    }
+
     @Test("times out and terminates a hung subprocess instead of blocking forever")
     func timesOut() async throws {
         let clock = ContinuousClock()

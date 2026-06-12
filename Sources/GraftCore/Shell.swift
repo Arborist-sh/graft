@@ -57,6 +57,13 @@ public enum Shell {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        // Never let a captured-output child inherit our controlling terminal as stdin.
+        // It would otherwise hang: e.g. `orchard ssh` sees a TTY on stdin, tries to run
+        // an interactive session, and (with our dashboard also using the terminal) never
+        // returns — so the guest-ready probe timed out forever under an interactive
+        // `graft run`, while non-TTY (daemon/piped) runs worked. /dev/null stdin makes
+        // every captured command behave identically regardless of how graft was launched.
+        process.standardInput = FileHandle.nullDevice
 
         let box = UncheckedSendableBox(process)
         return try await withTaskCancellationHandler {
