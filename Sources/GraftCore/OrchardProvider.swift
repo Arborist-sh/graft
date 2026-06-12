@@ -1,0 +1,183 @@
+import Foundation
+
+/// Orchard controller env-var names (auth + endpoint), matching the `orchard` CLI.
+enum OrchardEnv {
+    static let url = "ORCHARD_URL"
+    static let accountName = "ORCHARD_SERVICE_ACCOUNT_NAME"
+    static let accountToken = "ORCHARD_SERVICE_ACCOUNT_TOKEN"
+}
+
+/// `VMProvider` backed by the `orchard` CLI talking to an Orchard controller — the
+/// multi-host fleet backend. The supervisor drives this identically to local Tart;
+/// the difference is the controller schedules each VM onto one of a cluster of Apple
+/// Silicon workers (and owns Apple's per-host 2-macOS-VM limit).
+///
+/// Every `orchard` invocation carries the controller URL + service-account creds in
+/// its environment, so graft never runs `orchard context create` or touches the
+/// user's `~/.config/orchard`. Exec rides Orchard's own websocket-tunneled SSH via
+/// `orchard ssh vm`, so we don't need a VM IP — VMs are addressed by name cluster-wide.
+public struct OrchardProvider: VMProvider {
+    /// Prefix on every VM graft creates, so listing + the orphan sweep can tell graft's
+    /// VMs apart from anything else on the cluster.
+    public static let namePrefix = "graft-"
+    static let executable = "orchard"
+
+    let controllerURL: String
+    let serviceAccount: String
+    let token: String
+    let maxVMs: Int
+
+    public init(config: OrchardConfig) {
+        self.controllerURL = config.controllerURL.absoluteString
+        self.serviceAccount = config.serviceAccount
+        self.token = config.token
+        self.maxVMs = config.maxVMs ?? 100
+    }
+
+    /// Auth + endpoint injected into every `orchard` call (no `orchard context` needed).
+    var env: [String: String] {
+        var e = ProcessInfo.processInfo.environment
+        e[OrchardEnv.url] = controllerURL
+        e[OrchardEnv.accountName] = serviceAccount
+        e[OrchardEnv.accountToken] = token
+        return e
+    }
+
+    // MARK: VMProvider
+
+    /// The controller does the real scheduling (and owns Apple's per-host 2-macOS-VM
+    /// limit), so graft doesn't second-guess it — we report the configured ceiling and
+    /// let the controller queue anything that doesn't fit right now.
+    public func capacity(for os: GuestOS) async -> Int { maxVMs }
+
+    public func acquire(image: String, os: GuestOS, mounts: [Mount] = [], network: VMNetwork = .nat) async throws -> RunningVM {
+        let name = Self.namePrefix + UUID().uuidString.lowercased()
+        let args = Self.createArgs(name: name, image: image, os: os, mounts: mounts, network: network)
+
+        let created = try await Shell.run(Self.executable, args, environment: env, timeout: .seconds(30))
+        guard created.succeeded else {
+            throw GraftError("`orchard create vm` failed: \(Self.message(created))")
+        }
+        do {
+            let worker = try await waitForRunning(name)
+            return RunningVM(name: name, ip: worker, os: os)
+        } catch {
+            // Don't leak a scheduled-but-doomed VM.
+            try? await release(RunningVM(name: name, ip: "", os: os))
+            throw error
+        }
+    }
+
+    public func release(_ vm: RunningVM) async throws {
+        // Idempotent: deleting an already-gone VM must not throw the slot's teardown.
+        _ = try? await Shell.run(Self.executable, ["delete", "vm", vm.name], environment: env, timeout: .seconds(30))
+    }
+
+    public func exec(on vm: RunningVM, _ command: [String], timeout: Duration? = nil) async throws -> ShellResult {
+        // `orchard ssh vm --wait 0 NAME "<cmd>"` runs over the controller's SSH tunnel.
+        // --wait 0: the VM is already running (acquire waited), so don't re-wait for it.
+        try await Shell.run(
+            Self.executable,
+            ["ssh", "vm", "--wait", "0", vm.name, command.joined(separator: " ")],
+            environment: env,
+            timeout: timeout
+        )
+    }
+
+    public func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {
+        // `bash -s` reads the script on stdin (forwarded through the SSH session). The
+        // orchard CLI exits 0 iff the remote command exited 0 — graft only needs the
+        // 0/non-zero distinction, which is preserved (exact non-zero codes are not).
+        try await Shell.runStreaming(
+            Self.executable,
+            ["ssh", "vm", "--wait", "0", vm.name, "bash -s"],
+            stdin: script,
+            environment: env,
+            onLine: onLine
+        )
+    }
+
+    /// Delete every graft-managed VM still registered on the controller (by name prefix).
+    public func sweepOrphans() async {
+        guard let result = try? await Shell.run(
+            Self.executable, ["list", "vms", "--quiet"], environment: env, timeout: .seconds(20)
+        ), result.succeeded else { return }
+        let names = result.stdout
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix(Self.namePrefix) }
+        for name in names {
+            Log.info("sweeping \(name)")
+            _ = try? await Shell.run(Self.executable, ["delete", "vm", name], environment: env, timeout: .seconds(30))
+        }
+    }
+
+    // MARK: Argument building (pure — unit-tested)
+
+    /// The full `orchard create vm …` argv for an ephemeral runner VM.
+    static func createArgs(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork) -> [String] {
+        var args = [
+            "create", "vm",
+            "--image", image,
+            "--os", orchardOS(os),
+            "--restart-policy", "never",   // ephemeral: one job, never auto-restart
+        ]
+        for mount in mounts { args += ["--host-dirs", mount.tartDirArg] }
+        args += network.orchardFlags
+        args.append(name)
+        return args
+    }
+
+    /// Orchard's `--os` value. NB: scheduling a macOS image as `linux` is Orchard's
+    /// documented escape hatch from Apple's 2-macOS-VM/host cap — but graft passes the
+    /// pool's declared OS straight through; that trick is the operator's call in config.
+    static func orchardOS(_ os: GuestOS) -> String {
+        switch os {
+        case .macOS: return "darwin"
+        case .linux: return "linux"
+        }
+    }
+
+    // MARK: Helpers
+
+    /// Poll `orchard get vm <name>/status` until the controller+worker bring the VM to
+    /// `running` (returning the assigned worker), or it goes `failed` / we time out.
+    /// Generous deadline: a cold worker may pull the image before booting.
+    private func waitForRunning(
+        _ name: String,
+        timeout: Duration = .seconds(600),
+        pollInterval: Duration = .seconds(3)
+    ) async throws -> String {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            switch (try? await field(name, "status"))?.lowercased() ?? "" {
+            case "running":
+                let worker = try? await field(name, "worker")
+                return (worker?.isEmpty == false) ? worker! : "orchard"
+            case "failed":
+                let msg = (try? await field(name, "status_message")) ?? ""
+                throw GraftError("orchard VM \(name) failed\(msg.isEmpty ? "" : ": \(msg)")")
+            default:
+                try await Task.sleep(for: pollInterval)
+            }
+        }
+        throw GraftError("orchard VM \(name) wasn't running within \(timeout)")
+    }
+
+    /// One field of a VM via structpath — `orchard get vm <name>/<jsonKey>` prints the raw value.
+    private func field(_ name: String, _ jsonKey: String) async throws -> String {
+        let result = try await Shell.run(
+            Self.executable, ["get", "vm", "\(name)/\(jsonKey)"], environment: env, timeout: .seconds(15)
+        )
+        guard result.succeeded else {
+            throw GraftError("`orchard get vm \(name)/\(jsonKey)` failed: \(Self.message(result))")
+        }
+        return result.stdoutTrimmed
+    }
+
+    /// Prefer stderr for an error message, fall back to stdout.
+    static func message(_ r: ShellResult) -> String {
+        r.stderrTrimmed.isEmpty ? r.stdoutTrimmed : r.stderrTrimmed
+    }
+}

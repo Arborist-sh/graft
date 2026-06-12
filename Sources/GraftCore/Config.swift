@@ -106,10 +106,24 @@ public struct PoolConfig: Codable, Sendable {
     }
 }
 
-/// Multi-host backend settings (Phase 2).
+/// Multi-host backend settings — the Orchard controller graft schedules VMs onto.
 public struct OrchardConfig: Codable, Sendable {
+    /// Controller address, e.g. `https://orchard.example.com:6120`.
     public var controllerURL: URL
+    /// Service account the controller authenticates graft as (needs VM compute rights).
+    public var serviceAccount: String
+    /// Service account token. Resolved from config today; Keychain-backed later.
     public var token: String
+    /// Cluster-wide ceiling graft fills toward. The controller does the real scheduling
+    /// (incl. Apple's per-host 2-macOS-VM limit); this only bounds graft's ask. Default 100.
+    public var maxVMs: Int?
+
+    public init(controllerURL: URL, serviceAccount: String, token: String, maxVMs: Int? = nil) {
+        self.controllerURL = controllerURL
+        self.serviceAccount = serviceAccount
+        self.token = token
+        self.maxVMs = maxVMs
+    }
 }
 
 /// Where the GitHub App PEM lives. Keychain only — `scope` picks login (interactive
@@ -212,8 +226,18 @@ extension GraftConfig {
             }
         }
 
-        if provider == "orchard" && orchard == nil {
-            problems.append("provider is 'orchard' but no orchard config provided")
+        switch provider {
+        case "tart":
+            break
+        case "orchard":
+            if let orchard {
+                if orchard.serviceAccount.isEmpty { problems.append("orchard: serviceAccount is empty") }
+                if orchard.token.isEmpty { problems.append("orchard: token is empty") }
+            } else {
+                problems.append("provider is 'orchard' but no orchard config provided")
+            }
+        default:
+            problems.append("unknown provider '\(provider)' — expected 'tart' or 'orchard'")
         }
         return problems
     }

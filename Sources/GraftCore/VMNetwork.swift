@@ -23,6 +23,16 @@ public enum VMNetwork: Codable, Sendable, Equatable {
         }
     }
 
+    /// The `orchard create vm` flags for this mode (empty for the NAT default).
+    /// Orchard takes `--net-bridged <iface>` and `--net-softnet` (matching Tart's modes).
+    public var orchardFlags: [String] {
+        switch self {
+        case .nat: return []
+        case .bridged(let iface): return ["--net-bridged", iface]
+        case .softnet: return ["--net-softnet"]
+        }
+    }
+
     /// Parse a spec string: `nat`, `bridged:<iface>` / `bridged=<iface>`, or `softnet`.
     public init(spec: String) throws {
         let s = spec.trimmingCharacters(in: .whitespaces)

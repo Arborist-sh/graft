@@ -342,15 +342,11 @@ public actor PoolSupervisor {
         }
     }
 
-    /// Destroy any graft-managed VMs still on the host — belt-and-suspenders so a
-    /// crash or a teardown race never leaves a VM (and its quota slot) behind.
+    /// Destroy any graft-managed VMs the backend still has — belt-and-suspenders so a
+    /// crash or a teardown race never leaves a VM (and its capacity slot) behind. Each
+    /// provider knows how to find its own (local Tart by prefix, Orchard via its API).
     private func sweepGraftVMs() async {
-        guard let tart = provider as? LocalTartProvider else { return }
-        for vm in (try? await tart.graftManagedVMs()) ?? [] {
-            Log.info("sweeping \(vm.name)")
-            try? await Tart.stop(name: vm.name)
-            try? await Tart.delete(name: vm.name)
-        }
+        await provider.sweepOrphans()
     }
 
     private func cleanup() async {

@@ -29,9 +29,19 @@ public protocol VMProvider: Sendable {
     /// line live (so the supervisor can echo it and watch for runner state markers);
     /// when nil the output inherits this process's streams.
     func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32
+
+    /// Destroy any graft-managed VMs this backend still has lying around — a
+    /// belt-and-suspenders sweep the supervisor runs on shutdown so a crash or
+    /// teardown race never strands a VM (and its capacity slot). Each backend knows
+    /// how to enumerate its own (local Tart by name prefix, Orchard via its API).
+    /// Default no-op for backends that don't need it.
+    func sweepOrphans() async
 }
 
 extension VMProvider {
+    /// Most backends don't strand host-side state; opt in by overriding.
+    public func sweepOrphans() async {}
+
     /// Convenience: acquire with the default shared-NAT networking.
     public func acquire(image: String, os: GuestOS, mounts: [Mount] = []) async throws -> RunningVM {
         try await acquire(image: image, os: os, mounts: mounts, network: .nat)

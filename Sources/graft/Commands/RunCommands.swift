@@ -22,9 +22,6 @@ struct Run: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Echo every step (runner output + events) above the live status, instead of just the spinner.")
     var verbose = false
 
-    @Option(name: .long, help: "Use an Orchard controller instead of local Tart (not yet implemented).")
-    var orchardURL: String?
-
     func run() async throws {
         let path = GraftConfig.resolvePath(explicit: config, profile: profile)
         let cfg = try GraftConfig.load(from: path)
@@ -34,16 +31,17 @@ struct Run: AsyncParsableCommand {
             for problem in problems { printErr("  • \(problem)") }
             throw GraftError("config has \(problems.count) problem(s) — run `graft config validate`")
         }
-        guard orchardURL == nil, cfg.provider == "tart" else {
-            throw GraftError("only the local Tart provider is implemented; Orchard is planned")
-        }
 
+        let provider = try Self.makeProvider(cfg)
         let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
 
-        // Pull any pool images that aren't cached yet (with progress) before the live
-        // UI starts — so the first runner doesn't silently hang on a big download.
-        for image in Set(cfg.pools.map(\.image)).sorted() {
-            try await Tart.ensureAvailable(image)
+        // Local Tart: pull any pool images that aren't cached yet (with progress) before
+        // the live UI starts, so the first runner doesn't silently hang on a big download.
+        // Orchard workers pull images themselves (image-pull-policy), so skip it there.
+        if cfg.provider == "tart" {
+            for image in Set(cfg.pools.map(\.image)).sorted() {
+                try await Tart.ensureAvailable(image)
+            }
         }
 
         // Live spinner dashboard only when we own an interactive terminal; daemon /
@@ -66,7 +64,7 @@ struct Run: AsyncParsableCommand {
         }
         let supervisor = PoolSupervisor(
             config: cfg,
-            provider: LocalTartProvider(),
+            provider: provider,
             secrets: KeychainSecretStore(scope: scope),
             status: reporter
         )
@@ -82,6 +80,23 @@ struct Run: AsyncParsableCommand {
         }
         defer { sources.forEach { $0.cancel() } }
         await task.value
+    }
+
+    /// Pick the VM backend from config: local Tart (single host) or an Orchard
+    /// controller (multi-host fleet). `validate()` has already checked that an
+    /// `orchard` block is present when the provider is "orchard".
+    static func makeProvider(_ cfg: GraftConfig) throws -> any VMProvider {
+        switch cfg.provider {
+        case "tart":
+            return LocalTartProvider()
+        case "orchard":
+            guard let orchard = cfg.orchard else {
+                throw GraftError("provider is 'orchard' but no 'orchard' config block provided")
+            }
+            return OrchardProvider(config: orchard)
+        default:
+            throw GraftError("unknown provider '\(cfg.provider)' — expected 'tart' or 'orchard'")
+        }
     }
 }
 

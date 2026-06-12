@@ -44,7 +44,7 @@ multi-host fleets and a shared dev/CI image.
 | `tart exec` provisioning + runner loop | ✅ built (runner download unverified on a live VM) |
 | Pool supervisor + state + daemon | ✅ built & unit-tested |
 | Image builder + `graft dev` + `.graft` recipes | ✅ built & tested (real image baked end-to-end) |
-| Orchard multi-host backend | ⬜ planned |
+| Orchard multi-host backend | ✅ built (unverified without a live controller) — [docs/orchard.md](docs/orchard.md) |
 
 Built and driven through end-to-end; the parts that need real GitHub credentials or
 a booted VM to fully prove are flagged in code (`TODO(real-VM)`).
@@ -229,8 +229,9 @@ Full guide — clone vs mount, `--code`, the picker, advanced flags — in
 
 Everything pivots on **`VMProvider`** — `capacity`, `acquire`, `release`, plus an
 `exec` channel. The supervisor never calls `tart` directly, so `LocalTartProvider`
-(now) and a future `OrchardProvider` are a drop-in swap. The same move backs
-`SecretStore` (Keychain now, Vault/1Password later).
+(single host) and `OrchardProvider` (multi-host fleet) are a drop-in swap — same
+runner logic, different backend. The same move backs `SecretStore` (Keychain now,
+Vault/1Password later).
 
 ```
 PoolSupervisor (actor, desired-state loop)
@@ -248,18 +249,18 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 
 - **[docs/dev-boxes.md](docs/dev-boxes.md)** — `graft dev`: clone vs mount, persistence, `--code`, the picker
 - **[docs/images-and-caching.md](docs/images-and-caching.md)** — `.graft` recipes, the full field reference, CoW caching
+- **[docs/orchard.md](docs/orchard.md)** — the multi-host Orchard backend: controller/workers, service account, config
 - **[docs/ec2-mac-setup.md](docs/ec2-mac-setup.md)** — headless / EC2 Mac runners (auto-login, bridged networking)
 - **[editors/vscode/](editors/vscode/)** — the `.graft` VS Code extension
 
 ## Roadmap
 
-- `OrchardProvider` for multi-host fleets
 - Full desktop GUI app (dashboard, live logs, run history) — the menu-bar app's bigger sibling
 - Keychain ACL hardening for the headless daemon (bind to the graft binary)
 - `--unsafe-unrestricted-quota` (kernel boot-arg override, SIP off, opt-in)
 - `Twig`: native `Virtualization.framework` backend
 
-Shipped: ✅ menu-bar app (`Graft.app`); ✅ image builder + `graft dev` + `.graft` recipes (toolchain/system/cache-warming/VM-shape fields, bridged networking, repo pre-caching)
+Shipped: ✅ menu-bar app (`Graft.app`); ✅ image builder + `graft dev` + `.graft` recipes (toolchain/system/cache-warming/VM-shape fields, bridged networking, repo pre-caching); ✅ `OrchardProvider` multi-host backend
 
 ## Install
 
