@@ -62,6 +62,13 @@ public enum Shell {
         return try await withTaskCancellationHandler {
             try process.run()
 
+            // Close OUR copies of the pipe write-ends: Foundation leaves the parent's
+            // write-end open after spawn, so the read-ends never EOF even once the child
+            // exits — and the drains below would block forever (this is exactly how
+            // `gh auth token` wedged graft). The child kept its own dup'd fds.
+            try? outPipe.fileHandleForWriting.close()
+            try? errPipe.fileHandleForWriting.close()
+
             // Drain both pipes concurrently — reading only after exit risks a deadlock
             // if output exceeds the ~64KB pipe buffer.
             async let outData = drain(outPipe.fileHandleForReading)
@@ -143,12 +150,14 @@ public enum Shell {
 
         // With a line handler, capture stdout/stderr and forward live (so a live
         // dashboard can own the terminal); otherwise inherit this process's streams.
+        var outPipe: Pipe?, errPipe: Pipe?
         if let onLine {
-            let outPipe = Pipe(), errPipe = Pipe()
-            process.standardOutput = outPipe
-            process.standardError = errPipe
-            readLines(outPipe.fileHandleForReading, onLine)
-            readLines(errPipe.fileHandleForReading, onLine)
+            let o = Pipe(), e = Pipe()
+            outPipe = o; errPipe = e
+            process.standardOutput = o
+            process.standardError = e
+            readLines(o.fileHandleForReading, onLine)
+            readLines(e.fileHandleForReading, onLine)
         } else {
             process.standardOutput = FileHandle.standardOutput
             process.standardError = FileHandle.standardError
@@ -166,6 +175,10 @@ public enum Shell {
                 process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
                 do {
                     try process.run()
+                    // Close our copies of the pipe write-ends so the readers EOF when the
+                    // child exits (Foundation leaves the parent's write-end open).
+                    try? outPipe?.fileHandleForWriting.close()
+                    try? errPipe?.fileHandleForWriting.close()
                     if let stdin {
                         let handle = inputPipe.fileHandleForWriting
                         handle.write(Data(stdin.utf8))

@@ -160,9 +160,16 @@ public enum DevCode {
                 }
             }
         }
-        guard let r = try? await Shell.run("gh", ["auth", "token"], timeout: .seconds(8)),
-              r.succeeded, !r.stdoutTrimmed.isEmpty else { return nil }
-        return r.stdoutTrimmed
+        // Write the token to a temp file rather than a pipe: `gh` spawns a helper that
+        // outlives it and keeps the stdout/stderr pipe open, which wedges graft's output
+        // drain forever. With a file, graft's pipes carry nothing from gh and EOF cleanly.
+        let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("graft-gh-\(UUID().uuidString.prefix(8)).tok")
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        let r = try? await Shell.run("sh", ["-c", "gh auth token >'\(tmp)' 2>/dev/null"], timeout: .seconds(10))
+        guard r?.succeeded == true,
+              let raw = try? String(contentsOfFile: tmp, encoding: .utf8) else { return nil }
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
     }
 
     /// Clone `url` (HTTPS) into `~/work/<repoName>` inside the guest. For a github URL with a
