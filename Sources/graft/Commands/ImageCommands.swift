@@ -127,7 +127,7 @@ extension Image {
     struct Pull: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Pull an image from a registry.")
 
-        @Argument(help: "Registry ref, e.g. ghcr.io/cirruslabs/macos-sequoia-xcode:latest")
+        @Argument(help: "Registry ref, e.g. ghcr.io/cirruslabs/macos-tahoe-xcode:latest")
         var ref: String
 
         func run() async throws {

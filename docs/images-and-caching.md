@@ -12,7 +12,7 @@ so a whole toolchain is a few lines:
 
 ```yaml
 name: rn-detox
-from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest
+from: ghcr.io/cirruslabs/macos-tahoe-xcode:latest
 
 node: "20.19.4"          # fnm install + default + corepack + stable /usr/local/bin symlink
 ruby: "3.3.5"            # rbenv install + bundler

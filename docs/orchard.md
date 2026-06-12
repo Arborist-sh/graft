@@ -75,7 +75,7 @@ Create one and grab its token (see `orchard create service-account --help`).
   "pools": [
     {
       "name": "macos-ci",
-      "image": "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+      "image": "ghcr.io/cirruslabs/macos-tahoe-xcode:latest",
       "os": "macos",
       "count": 6,
       "github": { "appId": 12345, "target": "org:my-org", "runnerGroupId": 1 }

@@ -1,5 +1,5 @@
 {
   "name": "ci-base",
-  "from": "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+  "from": "ghcr.io/cirruslabs/macos-tahoe-xcode:latest",
   "script": "provision.sh"
 }

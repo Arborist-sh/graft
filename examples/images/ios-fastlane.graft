@@ -1,6 +1,6 @@
 # iOS build/release with Fastlane.
 name: ios-fastlane
-from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest
+from: ghcr.io/cirruslabs/macos-tahoe-xcode:latest
 
 ruby: "3.3.5"
 gems: [fastlane]

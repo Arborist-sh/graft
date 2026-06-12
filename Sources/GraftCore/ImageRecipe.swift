@@ -582,7 +582,7 @@ public struct ImageRecipe: Codable, Sendable {
         # A .graft image recipe — declarative toolchain + system config, expanded by graft
         # into the right provisioning steps. Drop to `run:` / `script:` for anything custom.
         name: rn-detox
-        from: ghcr.io/cirruslabs/macos-sequoia-xcode:latest
+        from: ghcr.io/cirruslabs/macos-tahoe-xcode:latest
 
         # ── Toolchain ──────────────────────────────────────────────
         node: "20.19.4"            # fnm install + default + corepack + stable /usr/local/bin symlink

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "name": { "type": "string", "description": "The local image name produced by the build." },
-    "from": { "type": "string", "description": "Base Tart image to clone, e.g. ghcr.io/cirruslabs/macos-sequoia-xcode:latest" },
+    "from": { "type": "string", "description": "Base Tart image to clone, e.g. ghcr.io/cirruslabs/macos-tahoe-xcode:latest" },
 
     "xcode": { "type": ["string", "number"], "description": "Select active Xcode → sudo xcodes select <version>." },
     "node": { "type": ["string", "number"], "description": "Node version — fnm install/default + corepack + a stable /usr/local/bin node symlink. Quote bare majors (\"20\")." },

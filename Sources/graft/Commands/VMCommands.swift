@@ -17,7 +17,7 @@ extension VM {
             abstract: "Clone + boot a VM, wait for its IP, print `name<TAB>ip`."
         )
 
-        @Argument(help: "Tart image, e.g. ghcr.io/cirruslabs/macos-sequoia-xcode:latest")
+        @Argument(help: "Tart image, e.g. ghcr.io/cirruslabs/macos-tahoe-xcode:latest")
         var image: String
 
         @Option(help: "Guest OS (macos|linux) for capacity accounting.")

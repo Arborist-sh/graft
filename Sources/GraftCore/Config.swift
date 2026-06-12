@@ -250,7 +250,7 @@ extension GraftConfig {
           "pools": [
             {
               "name": "macos-release",
-              "image": "ghcr.io/cirruslabs/macos-sequoia-xcode:latest",
+              "image": "ghcr.io/cirruslabs/macos-tahoe-xcode:latest",
               "os": "macos",
               "count": 2,
               "github": {

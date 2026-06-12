@@ -2,11 +2,12 @@ import Foundation
 import GraftCore
 
 /// Tiny stdin/stderr prompt helpers for interactive commands. Questions go to
-/// stderr so stdout stays clean; answers are read from stdin.
+/// stderr so stdout stays clean; answers are read from stdin. The `?`/`›` styling
+/// matches the arrow-key `Select` so every prompt reads as one family.
 enum Prompt {
     static func line(_ question: String, default fallback: String? = nil) -> String {
-        let suffix = fallback.map { " [\($0)]" } ?? ""
-        FileHandle.standardError.write(Data("\(question)\(suffix): ".utf8))
+        let hint = fallback.map { " " + ANSI.dim("[\($0)]") } ?? ""
+        FileHandle.standardError.write(Data("\(ANSI.green("?")) \(question)\(hint) \(ANSI.dim("›")) ".utf8))
         let input = readLine()?.trimmingCharacters(in: .whitespaces) ?? ""
         if input.isEmpty, let fallback { return fallback }
         return input
@@ -16,7 +17,7 @@ enum Prompt {
         while true {
             let value = line(question)
             if !value.isEmpty { return value }
-            printErr("  (required)")
+            printErr(ANSI.dim("  (required)"))
         }
     }
 
@@ -24,7 +25,7 @@ enum Prompt {
         while true {
             let value = line(question, default: String(fallback))
             if let number = Int(value) { return number }
-            printErr("  (enter a number)")
+            printErr(ANSI.dim("  (enter a number)"))
         }
     }
 
@@ -32,26 +33,21 @@ enum Prompt {
         while true {
             let value = line(question)
             if let number = Int(value), number > 0 { return number }
-            printErr("  (enter a positive number)")
+            printErr(ANSI.dim("  (enter a positive number)"))
         }
     }
 
     static func confirm(_ question: String, default fallback: Bool = true) -> Bool {
         let hint = fallback ? "Y/n" : "y/N"
-        let value = line("\(question) (\(hint))").lowercased()
+        let value = line("\(question) \(ANSI.dim("(\(hint))"))").lowercased()
         if value.isEmpty { return fallback }
         return value.hasPrefix("y")
     }
 
-    /// Present a numbered menu, return the chosen index.
+    /// Present a selectable menu (arrow-key `Select` on a TTY, numbered fallback when
+    /// piped), return the chosen index. Non-cancellable: callers expect an answer.
     static func choose(_ question: String, _ options: [String]) -> Int {
-        printErr(question)
-        for (index, option) in options.enumerated() { printErr("  [\(index + 1)] \(option)") }
-        while true {
-            let value = line("pick [1-\(options.count)]")
-            if let number = Int(value), (1...options.count).contains(number) { return number - 1 }
-            printErr("  not a valid choice")
-        }
+        Select.choose(question, options, cancellable: false) ?? 0
     }
 }
 

@@ -10,10 +10,10 @@ preview what a recipe compiles to with `graft image render -f <recipe>`.
 
 | Recipe | Base | For |
 |--------|------|-----|
-| [`rn-detox.graft`](rn-detox.graft) | `macos-sequoia-xcode` | React Native + Detox iOS e2e |
-| [`ios-fastlane.graft`](ios-fastlane.graft) | `macos-sequoia-xcode` | iOS build/release with Fastlane |
-| [`node-ci.json`](node-ci.json) | `macos-sequoia-base` | Lean Node/TS CI — `run:` escape hatch |
-| [`script-based/`](script-based/) | `macos-sequoia-xcode` | Point at an existing `provision.sh` |
+| [`rn-detox.graft`](rn-detox.graft) | `macos-tahoe-xcode` | React Native + Detox iOS e2e |
+| [`ios-fastlane.graft`](ios-fastlane.graft) | `macos-tahoe-xcode` | iOS build/release with Fastlane |
+| [`node-ci.json`](node-ci.json) | `macos-tahoe-base` | Lean Node/TS CI — `run:` escape hatch |
+| [`script-based/`](script-based/) | `macos-tahoe-xcode` | Point at an existing `provision.sh` |
 
 ```sh
 graft image render -f examples/images/rn-detox.graft   # see the compiled script
