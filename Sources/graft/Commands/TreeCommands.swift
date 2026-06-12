@@ -162,19 +162,65 @@ extension Tree {
         @Option(name: .long, help: "Controller data directory (state + accounts persist here).")
         var dataDir: String = Tree.dataDir
 
+        @Flag(name: .long, help: "Bonsai: a tiny local tree — trunk + one branch on this machine (for testing).")
+        var bonsai = false
+
         func run() async throws {
             try await Tree.requireOrchard()
             try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
+            if bonsai { try await plantBonsai(); return }
+
             printErr(ANSI.green("🕳  digging a hole…"))
             printErr(ANSI.green("🌱  planting the trunk…") + ANSI.dim("   (Ctrl-C to stop)"))
             printErr(ANSI.dim("    data: \(dataDir)\n"))
+            let code = try await runTrunk()
+            if code != 0 { throw ExitCode(code) }
+        }
 
+        /// A **bonsai** — a tiny self-contained tree: the trunk plus one branch, both on
+        /// this machine, for local testing. Runs them as separate processes (not the
+        /// wedge-prone fused `orchard dev`): the trunk in the foreground, a branch grafted
+        /// on in the background once the trunk is up. Ctrl-C stops both (shared group).
+        private func plantBonsai() async throws {
+            printErr(ANSI.green("🪴  potting a bonsai — a local trunk + branch…") + ANSI.dim("   (Ctrl-C to stop)\n"))
+            let url = "http://127.0.0.1:6120"
             let tokenFile = Tree.adminTokenFile
-            let code = try await Shell.runStreaming(
+
+            // Once the trunk is listening + the admin token is captured, graft a branch on.
+            let branch = Task {
+                for _ in 0..<90 where (try? String(contentsOfFile: tokenFile))?.isEmpty != false {
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                try? await Task.sleep(for: .seconds(1))
+                do {
+                    let boot = try await Tree.mintBootstrapToken(url: url)
+                    printErr(ANSI.green("🌿  grafting a branch on…\n"))
+                    _ = try await Shell.runStreaming(
+                        "orchard", ["worker", "run", url, "--bootstrap-token", boot, "--name", "bonsai"],
+                        onLine: { line in FileHandle.standardError.write(Data(("[branch] " + line + "\n").utf8)) }
+                    )
+                } catch is CancellationError {
+                } catch {
+                    printErr(ANSI.yellow("  branch failed: \(error)"))
+                }
+            }
+            defer { branch.cancel() }
+
+            printErr(ANSI.green("🕳  digging a hole… 🌱 planting the trunk…\n"))
+            let code = try await runTrunk(prefix: "[trunk] ")
+            branch.cancel()
+            if code != 0 { throw ExitCode(code) }
+        }
+
+        /// Run the controller in the foreground, echoing its logs (optionally prefixed) and
+        /// capturing the one-time bootstrap-admin token so `branch`/`prune` can authenticate.
+        private func runTrunk(prefix: String = "") async throws -> Int32 {
+            let tokenFile = Tree.adminTokenFile
+            return try await Shell.runStreaming(
                 "orchard",
                 ["controller", "run", "--insecure-no-tls", "--insecure-ssh-no-client-auth", "--data-dir", dataDir],
                 onLine: { line in
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                    FileHandle.standardError.write(Data((prefix + line + "\n").utf8))
                     let clean = Tree.stripANSI(line)
                     if let r = clean.range(of: "Service account token:") {
                         let tok = clean[r.upperBound...].trimmingCharacters(in: .whitespaces)
@@ -182,7 +228,6 @@ extension Tree {
                     }
                 }
             )
-            if code != 0 { throw ExitCode(code) }
         }
     }
 
