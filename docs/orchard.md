@@ -118,15 +118,18 @@ the cluster absorb it.
 
 ## Troubleshooting
 
-- **`graft run` acquires a VM but then every runner fails with "guest wasn't ready to
-  exec within 60s", and the controller logs `context deadline exceeded` on
-  `/port-forward`.** Orchard can't reach the VM's SSH port. This is almost always Tart's
-  **default 1-day DHCP lease**, which leaves the worker unable to learn the VM's IP —
-  Orchard warns about it at startup. Fix it per
-  [tart.run/faq → DHCP lease time](https://tart.run/faq/#changing-the-default-dhcp-lease-time),
-  then re-run. (graft is doing the right thing here: it bounds `waitForGuest`, releases
-  the unreachable VM, and re-acquires.)
-- **Verified against Orchard 0.55.0**: `create vm` (with `--os`), `get vm <name>/status`
-  polling, `delete vm`, and `ssh vm --wait` all work. Note graft avoids `list vms
-  --quiet` (added after 0.55.0) and doesn't pass `--restart-policy` (Orchard defaults to
-  `Never`, which is what ephemeral runners want).
+- **`orchard ssh` / port-forward fails instantly with `context deadline exceeded` (500).**
+  Orchard's `--wait` flag is the deadline for the *entire* port-forward rendezvous (the
+  controller waiting for the worker to stand up the SSH tunnel), not just "wait for the VM
+  to be running" — so `--wait 0` kills the tunnel in ~100µs before the worker can respond.
+  graft never passes `--wait 0` for this reason (see `OrchardProvider.sshArgs`); if you
+  hit this driving `orchard` by hand, pass a real `--wait` (the CLI default is 60s).
+- **Tart's default 1-day DHCP lease** can independently cause worker↔VM comms issues
+  (Orchard warns about it at startup); if VMs are genuinely unreachable, fix it per
+  [tart.run/faq → DHCP lease time](https://tart.run/faq/#changing-the-default-dhcp-lease-time).
+
+**Verified end-to-end against Orchard 0.55.0** (`orchard dev`, single Mac): `create vm`
+(with `--os`), `get vm <name>/status` polling, `ssh vm` exec, the JIT runner downloading
+over `orchard ssh` and registering on GitHub ("Listening for Jobs"), and `delete vm`.
+graft avoids `list vms --quiet` (added after 0.55.0) and doesn't pass `--restart-policy`
+(Orchard defaults to `Never`, which is what ephemeral runners want).

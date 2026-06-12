@@ -44,7 +44,7 @@ multi-host fleets and a shared dev/CI image.
 | `tart exec` provisioning + runner loop | ✅ built (runner download unverified on a live VM) |
 | Pool supervisor + state + daemon | ✅ built & unit-tested |
 | Image builder + `graft dev` + `.graft` recipes | ✅ built & tested (real image baked end-to-end) |
-| Orchard multi-host backend | ✅ built (unverified without a live controller) — [docs/orchard.md](docs/orchard.md) |
+| Orchard multi-host backend | ✅ verified end-to-end against a live controller — [docs/orchard.md](docs/orchard.md) |
 
 Built and driven through end-to-end; the parts that need real GitHub credentials or
 a booted VM to fully prove are flagged in code (`TODO(real-VM)`).
