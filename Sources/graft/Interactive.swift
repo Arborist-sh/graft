@@ -382,14 +382,22 @@ enum Wizard {
                 env[OrchardEnv.accountName] = "bootstrap-admin"
                 env[OrchardEnv.accountToken] = admin
             }
-            let result = try await Shell.run("orchard", [
+            let createArgs = [
                 "create", "service-account", account,
                 "--roles", "compute:read", "--roles", "compute:write", "--roles", "compute:connect",
                 "--token", token,
-            ], environment: env, timeout: .seconds(20))
+            ]
+            var result = try await Shell.run("orchard", createArgs, environment: env, timeout: .seconds(20))
+            // Idempotent: if it already exists (a re-run), re-provision it — delete the
+            // stale account and recreate with our token, so re-running init always works.
+            let firstMsg = result.stderrTrimmed.isEmpty ? result.stdoutTrimmed : result.stderrTrimmed
+            if !result.succeeded, firstMsg.contains("already exists") {
+                _ = try? await Shell.run("orchard", ["delete", "service-account", account], environment: env, timeout: .seconds(20))
+                result = try await Shell.run("orchard", createArgs, environment: env, timeout: .seconds(20))
+            }
             guard result.succeeded else {
                 printErr(ANSI.yellow("  couldn't create it: \(result.stderrTrimmed.isEmpty ? result.stdoutTrimmed : result.stderrTrimmed)"))
-                printErr("  (already exists, or no admin access on the trunk?)")
+                printErr("  (no admin access on the trunk? — paste an existing token instead)")
                 let pasted = Prompt.required("Paste an existing token for '\(account)'")
                 try store.storeOrchardToken(pasted, account: account)
                 printErr("✓ stored token for '\(account)' in the \(scope.rawValue) keychain")
