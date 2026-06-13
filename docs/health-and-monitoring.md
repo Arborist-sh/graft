@@ -62,7 +62,7 @@ about them.
 |---|---|---|---|
 | `auth` | rot | GitHub App auth chain fails (key → JWT → installation → token) | the `arborist` chain |
 | `runner` | blight | a graft-named runner registered but **offline** on GitHub (a missed deregistration) | `listRunners` |
-| `capacity` | drought | configured count exceeds host capacity; a fleet worker is **paused** | `provider.capacity`, Orchard `report()` |
+| `capacity` | drought | configured count exceeds host capacity; a fleet worker is **paused**; the **controller is unreachable** | `provider.capacity`, Orchard `report()` |
 | `leaf` | wilt | a slot **wedged** in a transient phase (booting/provisioning/…) past a timeout | persisted slot phases |
 | `supervisor` | deadwood | a graft VM the backend still has that **no slot owns** (a leak) | `provider.managedVMNames()` |
 | `host` | soil | low disk · memory pressure · `tart`/controller unhealthy (branch/trunk agents) | FileManager, Mach, `tart list` |

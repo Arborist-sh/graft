@@ -128,8 +128,9 @@ public enum HealthMonitorFactory {
         for pool in config.pools { desiredByOS[pool.os, default: 0] += pool.count }
         let capacity: @Sendable (GuestOS) async -> Int = { os in await provider.capacity(for: os) }
 
-        // Fleet info is Orchard-only — Tart has no workers to pause.
+        // Fleet info + controller reachability are Orchard-only (Tart has no controller).
         let fleet: (@Sendable () async -> CapacityDetector.FleetSnapshot?)?
+        var controllerDetector: (any HealthDetector)?
         if let orchard = provider as? OrchardProvider {
             fleet = {
                 guard let report = try? await orchard.report() else { return nil }
@@ -137,8 +138,13 @@ public enum HealthMonitorFactory {
                     totalSlots: report.totalSlots, freeSlots: report.freeSlots,
                     pausedWorkers: report.workers.filter(\.paused).map(\.name))
             }
+            // Cheap one-call liveness probe (vs. report()'s N+1): can we list workers at all?
+            controllerDetector = ControllerReachabilityDetector(
+                controllerURL: orchard.controllerURL,
+                reachable: { (try? await orchard.rawList("workers")) != nil })
         } else {
             fleet = nil
+            controllerDetector = nil
         }
 
         // Network/controller-backed detectors work from anywhere with creds.
@@ -147,6 +153,7 @@ public enum HealthMonitorFactory {
             RunnerDetector(scopes: runnerScopes, list: runnerList),
             CapacityDetector(desiredByOS: desiredByOS, capacity: capacity, fleet: fleet),
         ]
+        if let controllerDetector { detectors.append(controllerDetector) }
 
         // State-backed detectors — only meaningful on the trunk host.
         if isTrunk {

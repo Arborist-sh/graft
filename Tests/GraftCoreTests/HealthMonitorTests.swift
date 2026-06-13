@@ -115,5 +115,19 @@ struct HealthMonitorTests {
 
         #expect(Set(trunk.map(\.name)) == ["auth", "runner", "capacity", "leaf", "supervisor"])
         #expect(Set(observer.map(\.name)) == ["auth", "runner", "capacity"])  // no leaf/deadwood off-trunk
+        #expect(trunk.count == 5)   // Tart: no controller-reachability detector
+    }
+
+    @Test("factory adds the controller-reachability detector on the Orchard backend")
+    func factoryOrchardControllerCheck() {
+        let orchard = OrchardConfig(controllerURL: URL(string: "http://c:6120")!, serviceAccount: "graft")
+        let cfg = GraftConfig(
+            provider: .orchard(orchard),
+            github: GitHubConfig(appId: 1, target: "org:acme"),
+            pools: [PoolConfig(name: "p", image: "i", os: .macOS, count: 1)])
+        let detectors = HealthMonitorFactory.detectors(
+            config: cfg, provider: OrchardProvider(config: orchard), secrets: StubSecrets(), isTrunk: true)
+        // auth, runner, capacity, controller-reachability, leaf, deadwood
+        #expect(detectors.count == 6)
     }
 }

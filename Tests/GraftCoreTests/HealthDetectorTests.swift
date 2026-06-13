@@ -78,6 +78,19 @@ struct HealthDetectorTests {
         #expect(await detector.probe().isEmpty)
     }
 
+    @Test("ControllerReachabilityDetector fires critical only when the controller is down")
+    func controllerReachability() async {
+        let up = ControllerReachabilityDetector(controllerURL: "http://c:6120", reachable: { true })
+        #expect(await up.probe().isEmpty)
+
+        let down = ControllerReachabilityDetector(controllerURL: "http://c:6120", reachable: { false })
+        let events = await down.probe()
+        #expect(events.count == 1)
+        #expect(events.first?.severity == .critical)
+        #expect(events.first?.category == .capacity)
+        #expect(events.first?.checkID == "controller-unreachable")
+    }
+
     // MARK: leaf (wedged slot)
 
     @Test("SupervisorSlotDetector flags a transient slot past the timeout, ignores busy ones")

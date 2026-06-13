@@ -159,6 +159,31 @@ public struct CapacityDetector: HealthDetector {
     }
 }
 
+/// Flags an **unreachable Orchard controller** — the scariest fleet failure to be silent
+/// about: with the controller down, graft can place no leaves at all, yet `capacity()`
+/// would just fall back to the static ceiling and say nothing. Orchard-only; injected
+/// `reachable` keeps it off the network in tests.
+public struct ControllerReachabilityDetector: HealthDetector {
+    let controllerURL: String
+    let reachable: @Sendable () async -> Bool
+    public var name: String { "capacity" }
+
+    public init(controllerURL: String, reachable: @escaping @Sendable () async -> Bool) {
+        self.controllerURL = controllerURL
+        self.reachable = reachable
+    }
+
+    public func probe() async -> [HealthEvent] {
+        if await reachable() { return [] }
+        return [HealthEvent(
+            severity: .critical, category: .capacity, checkID: "controller-unreachable",
+            subject: controllerURL,
+            message: "Orchard controller \(controllerURL) is unreachable — no leaves can be placed",
+            detail: ["controller": controllerURL],
+            suggestedAction: "check the controller process + network; runner acquisition is blocked until it's back")]
+    }
+}
+
 // MARK: - leaf (docs: "wilt")
 
 /// Flags runner slots wedged in a *transient* phase past a timeout — a leaf that booted
