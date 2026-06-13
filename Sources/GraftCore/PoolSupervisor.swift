@@ -33,7 +33,7 @@ public enum RunnerPhase: Sendable {
 
     public var label: String {
         switch self {
-        case .acquiring: return "booting VM"
+        case .acquiring: return "acquiring VM"
         case .waitingForCapacity: return "waiting for capacity"
         case .provisioning: return "registering runner"
         case .starting: return "starting up"
