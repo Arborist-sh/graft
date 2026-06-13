@@ -12,7 +12,7 @@ struct Tree: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tree",
         abstract: "Plant, tend, and inspect the tree — trunk, branches, and leaves.",
-        subcommands: [Plant.self, Branch.self, Prune.self, Status.self, Branches.self, Leaves.self]
+        subcommands: [Plant.self, Branch.self, Bonsai.self, Prune.self, Status.self, Branches.self, Leaves.self]
     )
 }
 
@@ -169,6 +169,25 @@ extension Tree {
 // MARK: - graft tree plant / branch / prune  (trunk + branch lifecycle)
 
 extension Tree {
+    /// Run the controller in the foreground, echoing its logs (optionally prefixed) and
+    /// capturing the one-time bootstrap-admin token so `branch`/`prune` can authenticate.
+    /// Shared by `plant` and `bonsai`.
+    static func runController(dataDir: String, prefix: String = "") async throws -> Int32 {
+        let tokenFile = adminTokenFile
+        return try await Shell.runStreaming(
+            "orchard",
+            ["controller", "run", "--insecure-no-tls", "--insecure-ssh-no-client-auth", "--data-dir", dataDir],
+            onLine: { line in
+                FileHandle.standardError.write(Data((prefix + line + "\n").utf8))
+                let clean = stripANSI(line)
+                if let r = clean.range(of: "Service account token:") {
+                    let tok = clean[r.upperBound...].trimmingCharacters(in: .whitespaces)
+                    if !tok.isEmpty { try? tok.write(toFile: tokenFile, atomically: true, encoding: .utf8) }
+                }
+            }
+        )
+    }
+
     /// Plant the trunk: run the controller in the foreground. On first run the controller
     /// prints a one-time `bootstrap-admin` token — we capture it so `branch`/`prune` can
     /// authenticate. (HTTP-only for now; TLS is a future option.)
@@ -177,9 +196,6 @@ extension Tree {
 
         @Option(name: .long, help: "Controller data directory (state + accounts persist here).")
         var dataDir: String = Tree.dataDir
-
-        @Flag(name: .long, help: "Bonsai: a tiny local tree — trunk + one branch on this machine (for testing).")
-        var bonsai = false
 
         @Flag(name: .long, help: "Also tend this trunk: host-vitals + controller-responding monitoring (detection-only).")
         var tend = false
@@ -197,20 +213,30 @@ extension Tree {
                 })) : nil
             defer { monitorTask?.cancel() }
 
-            if bonsai { try await plantBonsai(); return }
-
             printErr(ANSI.green("🕳  digging a hole…"))
             printErr(ANSI.green("🌱  planting the trunk…") + ANSI.dim("   (Ctrl-C to stop)"))
             printErr(ANSI.dim("    data: \(dataDir)\n"))
-            let code = try await runTrunk()
+            let code = try await Tree.runController(dataDir: dataDir)
             if code != 0 { throw ExitCode(code) }
         }
+    }
 
-        /// A **bonsai** — a tiny self-contained tree: the trunk plus one branch, both on
-        /// this machine, for local testing. Runs them as separate processes (not the
-        /// wedge-prone fused `orchard dev`): the trunk in the foreground, a branch grafted
-        /// on in the background once the trunk is up. Ctrl-C stops both (shared group).
-        private func plantBonsai() async throws {
+    /// Grow a bonsai — a complete tiny tree (trunk + one branch) on THIS machine, for local
+    /// testing. Separate orchard processes (not the wedge-prone fused `orchard dev`): the
+    /// trunk foreground, a branch grafted on in the background once the trunk is up. Ctrl-C
+    /// stops both. A bonsai is a quick sandbox, not a role — so it isn't tended; to monitor a
+    /// local setup, run `graft tree plant --tend` and `graft tree branch --tend` separately.
+    struct Bonsai: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Grow a bonsai — a whole tiny tree (trunk + branch) on this machine, for local testing.")
+
+        @Option(name: .long, help: "Controller data directory (state + accounts persist here).")
+        var dataDir: String = Tree.dataDir
+
+        func run() async throws {
+            try await Tree.requireOrchard()
+            try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
+
             printErr(ANSI.green("🪴  potting a bonsai — a local trunk + branch…") + ANSI.dim("   (Ctrl-C to stop)\n"))
             let url = "http://127.0.0.1:6120"
             let tokenFile = Tree.adminTokenFile
@@ -236,27 +262,9 @@ extension Tree {
             defer { branch.cancel() }
 
             printErr(ANSI.green("🕳  digging a hole… 🌱 planting the trunk…\n"))
-            let code = try await runTrunk(prefix: "[trunk] ")
+            let code = try await Tree.runController(dataDir: dataDir, prefix: "[trunk] ")
             branch.cancel()
             if code != 0 { throw ExitCode(code) }
-        }
-
-        /// Run the controller in the foreground, echoing its logs (optionally prefixed) and
-        /// capturing the one-time bootstrap-admin token so `branch`/`prune` can authenticate.
-        private func runTrunk(prefix: String = "") async throws -> Int32 {
-            let tokenFile = Tree.adminTokenFile
-            return try await Shell.runStreaming(
-                "orchard",
-                ["controller", "run", "--insecure-no-tls", "--insecure-ssh-no-client-auth", "--data-dir", dataDir],
-                onLine: { line in
-                    FileHandle.standardError.write(Data((prefix + line + "\n").utf8))
-                    let clean = Tree.stripANSI(line)
-                    if let r = clean.range(of: "Service account token:") {
-                        let tok = clean[r.upperBound...].trimmingCharacters(in: .whitespaces)
-                        if !tok.isEmpty { try? tok.write(toFile: tokenFile, atomically: true, encoding: .utf8) }
-                    }
-                }
-            )
         }
     }
 
