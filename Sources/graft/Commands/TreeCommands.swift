@@ -129,7 +129,8 @@ extension Tree {
             let width = report.workers.map { $0.name.count }.max() ?? 8
             print("\(pad("BRANCH", width))  PAUSED  LEAVES")
             for w in report.workers {
-                print("\(pad(w.name, width))  \(pad(w.paused ? "yes" : "no", 6))  \(w.slots)")
+                let stale = w.isStale ? ANSI.yellow("  ⚠ stale (no heartbeat)") : ""
+                print("\(pad(w.name, width))  \(pad(w.paused ? "yes" : "no", 6))  \(w.slots)\(stale)")
             }
             printErr(ANSI.dim("— tree: \(report.freeSlots) free / \(report.totalSlots) slots (\(report.usedVMs) used)"))
         }

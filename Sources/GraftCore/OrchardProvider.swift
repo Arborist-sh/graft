@@ -156,9 +156,18 @@ public struct OrchardProvider: VMProvider {
         public let name: String
         public let paused: Bool
         public let slots: Int
-        public init(name: String, paused: Bool, slots: Int) {
-            self.name = name; self.paused = paused; self.slots = slots
+        /// Seconds since this worker last heartbeated to the controller; nil if unknown.
+        public let lastSeenAge: TimeInterval?
+        public init(name: String, paused: Bool, slots: Int, lastSeenAge: TimeInterval? = nil) {
+            self.name = name; self.paused = paused; self.slots = slots; self.lastSeenAge = lastSeenAge
         }
+
+        /// A worker not seen within this window is a ghost — dead, but not yet reaped by the
+        /// controller (which keeps counting its slots until heartbeat timeout). Excluding it
+        /// keeps a killed worker from inflating capacity. Comfortably above any sane heartbeat
+        /// interval, so a live worker is never false-flagged.
+        public static let staleThreshold: TimeInterval = 120
+        public var isStale: Bool { (lastSeenAge ?? 0) > Self.staleThreshold }
     }
 
     /// A live snapshot of the fleet: workers (with advertised slots), how many VMs are
@@ -169,8 +178,10 @@ public struct OrchardProvider: VMProvider {
         public let workers: [OrchardWorker]
         public let usedVMs: Int
         public let graftVMNames: [String]
-        /// Slots advertised by the workers that can actually take a VM right now.
-        public var totalSlots: Int { workers.filter { !$0.paused }.reduce(0) { $0 + $1.slots } }
+        /// Slots advertised by workers that can actually take a VM right now — excludes
+        /// paused workers *and* ghosts (stale heartbeat), so a dead worker the controller
+        /// hasn't reaped doesn't inflate capacity.
+        public var totalSlots: Int { workers.filter { !$0.paused && !$0.isStale }.reduce(0) { $0 + $1.slots } }
         /// Free `tart-vms` slots across the fleet: advertised minus every VM already
         /// placed (graft's and anyone else's — they all consume host slots).
         public var freeSlots: Int { max(0, totalSlots - usedVMs) }
@@ -185,7 +196,14 @@ public struct OrchardProvider: VMProvider {
         var workers: [OrchardWorker] = []
         for (name, paused) in Self.workerRows(in: workersRaw) {
             let slots = Self.tartVMSlots(inWorkerDetail: try await runOrchard(["get", "worker", name])) ?? 0
-            workers.append(OrchardWorker(name: name, paused: paused, slots: slots))
+            // Absolute last-heartbeat via structpath (the table shows only a relative
+            // "2 minutes ago"). A worker not seen recently is a ghost the controller hasn't
+            // reaped — exclude its slots from capacity.
+            let lastSeenRaw = try? await runOrchard(["get", "worker", "\(name)/lastSeen"])
+            let age = lastSeenRaw.flatMap {
+                Self.lastSeenAge(from: $0.trimmingCharacters(in: .whitespacesAndNewlines), now: Date())
+            }
+            workers.append(OrchardWorker(name: name, paused: paused, slots: slots, lastSeenAge: age))
         }
         let vmsRaw = try await runOrchard(["list", "vms"])
         return FleetReport(
@@ -243,6 +261,23 @@ public struct OrchardProvider: VMProvider {
             return Int(digits)
         }
         return nil
+    }
+
+    /// Age in seconds of an orchard worker `lastSeen` timestamp (Go's `time.String()`
+    /// format, e.g. "2026-06-13 07:33:32.148021 -0700 PDT"). Robust by design: parses only
+    /// the date + whole-second time + numeric offset, dropping the fractional seconds and
+    /// the zone abbreviation (which `DateFormatter` handles poorly). nil if unparseable.
+    static func lastSeenAge(from raw: String, now: Date) -> TimeInterval? {
+        let tokens = raw.split(separator: " ")
+        guard tokens.count >= 3 else { return nil }
+        let day = String(tokens[0])
+        let time = tokens[1].split(separator: ".").first.map(String.init) ?? String(tokens[1])
+        let offset = String(tokens[2])
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        guard let date = formatter.date(from: "\(day) \(time) \(offset)") else { return nil }
+        return now.timeIntervalSince(date)
     }
 
     /// Count of VMs currently on the controller (all of them — every Tart VM consumes a
