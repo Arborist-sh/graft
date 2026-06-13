@@ -15,10 +15,10 @@ struct Arborist: AsyncParsableCommand {
         abstract: "Tree-doctor: verify the GitHub App auth chain end-to-end (no VM boot)."
     )
 
-    @Option(name: .long, help: "GitHub App ID (default: pick from keys in the keychain).")
+    @Option(name: .long, help: "GitHub App ID for a one-off check (default: check the active profile's pools).")
     var appId: Int?
 
-    @Option(name: .long, help: "Where runners register: 'org:NAME' or 'repo:OWNER/NAME' (default: prompt).")
+    @Option(name: .long, help: "Target 'org:NAME'/'repo:OWNER/NAME' for a one-off check (default: the active profile's pools).")
     var target: String?
 
     @Option(name: .long, help: "Runner group id for the probe runner (default 1).")
@@ -43,18 +43,9 @@ struct Arborist: AsyncParsableCommand {
         let pools: [PoolConfig]
         let scope: KeychainScope
 
-        if config != nil || profile != nil || pool != nil {
-            // Config/profile mode.
-            let path = GraftConfig.resolvePath(explicit: config, profile: profile)
-            let cfg = try GraftConfig.load(from: path)
-            let filtered = pool.map { name in cfg.pools.filter { $0.name == name } } ?? cfg.pools
-            guard !filtered.isEmpty else {
-                throw GraftError(pool.map { "no pool named '\($0)'" } ?? "no pools in config")
-            }
-            pools = filtered
-            scope = system ? .system : (KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login)
-        } else {
-            // Direct mode: App ID from flag or keychain picker; target from flag or prompt.
+        if appId != nil || target != nil {
+            // Ad-hoc mode: an explicit App/target was given — check that one (prompt for
+            // whichever half is missing). For one-off checks outside a profile.
             scope = system ? .system : .login
             let resolvedAppID = try appId ?? Self.pickAppID(scope: scope)
             let resolvedTarget = try target ?? Self.promptTarget()
@@ -62,6 +53,18 @@ struct Arborist: AsyncParsableCommand {
                 name: "cli", image: "-", os: .macOS, count: 0,
                 github: GitHubConfig(appId: resolvedAppID, target: resolvedTarget, runnerGroupId: runnerGroupId)
             )]
+        } else {
+            // Profile mode (default): check every pool in the resolved profile/config —
+            // each pool's App ID + target come straight from config, nothing to retype.
+            let path = GraftConfig.resolvePath(explicit: config, profile: profile)
+            let cfg = try GraftConfig.load(from: path)
+            let filtered = pool.map { name in cfg.pools.filter { $0.name == name } } ?? cfg.pools
+            guard !filtered.isEmpty else {
+                throw GraftError(pool.map { "no pool named '\($0)'" }
+                    ?? "no pools in the active profile — run `graft init`, or pass --app-id/--target for a one-off check")
+            }
+            pools = filtered
+            scope = system ? .system : (KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login)
         }
 
         let secrets = KeychainSecretStore(scope: scope)
