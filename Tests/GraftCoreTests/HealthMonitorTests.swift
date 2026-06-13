@@ -83,4 +83,37 @@ struct HealthMonitorTests {
         #expect(beats.count == 2)
         #expect(beats.allSatisfy { $0.severity == .info })
     }
+
+    // MARK: factory isTrunk gating
+
+    struct StubProvider: VMProvider {
+        func capacity(for os: GuestOS) async -> Int { 2 }
+        func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources) async throws -> RunningVM {
+            RunningVM(name: "x", ip: "", os: os)
+        }
+        func release(_ vm: RunningVM) async throws {}
+        func exec(on vm: RunningVM, _ command: [String], timeout: Duration?) async throws -> ShellResult {
+            ShellResult(exitCode: 0, stdout: "", stderr: "")
+        }
+        func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 { 0 }
+    }
+
+    struct StubSecrets: SecretStore {
+        func privateKeyPEM(forAppID appID: Int) async throws -> String { "" }
+    }
+
+    @Test("factory includes state-backed detectors only on the trunk")
+    func factoryIsTrunkGate() {
+        let cfg = GraftConfig(
+            github: GitHubConfig(appId: 1, target: "org:acme"),
+            pools: [PoolConfig(name: "p", image: "i", os: .macOS, count: 1)])
+
+        let trunk = HealthMonitorFactory.detectors(
+            config: cfg, provider: StubProvider(), secrets: StubSecrets(), isTrunk: true)
+        let observer = HealthMonitorFactory.detectors(
+            config: cfg, provider: StubProvider(), secrets: StubSecrets(), isTrunk: false)
+
+        #expect(Set(trunk.map(\.name)) == ["auth", "runner", "capacity", "leaf", "supervisor"])
+        #expect(Set(observer.map(\.name)) == ["auth", "runner", "capacity"])  // no leaf/deadwood off-trunk
+    }
 }

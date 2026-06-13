@@ -144,7 +144,12 @@ struct Arborist: AsyncParsableCommand {
         let heartbeatConfig = cfg.monitor?.heartbeatSeconds ?? 300
         let heartbeat: TimeInterval? = heartbeatConfig > 0 ? TimeInterval(heartbeatConfig) : nil
 
-        let detectors = HealthMonitorFactory.detectors(config: cfg, provider: provider, secrets: secrets)
+        // State-backed detectors (wedged-slot, deadwood) only make sense where the
+        // supervisor's state lives. If no `graft run` is up on this host, run as a
+        // read-only observer (auth/runner/capacity only) so deadwood can't false-fire.
+        let isTrunk = Daemon.runningPID() != nil
+        let detectors = HealthMonitorFactory.detectors(
+            config: cfg, provider: provider, secrets: secrets, isTrunk: isTrunk)
         let reporter = HealthReporter(sinks: HealthMonitorFactory.sinks(monitor: cfg.monitor))
         let monitor = HealthMonitor(
             detectors: detectors, reporter: reporter,
@@ -154,6 +159,9 @@ struct Arborist: AsyncParsableCommand {
         let webhookCount = cfg.monitor?.webhooks.count ?? 0
         printErr("arborist tending — \(detectors.count) detectors every \(intervalSeconds)s, "
             + "\(webhookCount) webhook(s); log → \(JSONLFileSink.defaultURL.path)")
+        if !isTrunk {
+            printErr("observer mode: no local `graft run` — slot + deadwood checks off (auth/runner/capacity only).")
+        }
         printErr("detection-only: nothing is remediated. Ctrl-C to stop.")
 
         let task = Task { await monitor.run() }

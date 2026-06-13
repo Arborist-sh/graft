@@ -88,10 +88,15 @@ public actor HealthMonitor {
 /// re-use existing probes — the GitHub App auth chain, `listRunners`, `provider.capacity`,
 /// the persisted slot phases, and `provider.managedVMNames()` — rather than paralleling them.
 public enum HealthMonitorFactory {
+    /// `isTrunk` gates the two detectors that read the supervisor's local state
+    /// (`~/.graft/state`): wedged-slot and deadwood. They are only correct on the host
+    /// running `graft run` — off-trunk the state is empty, which would make every fleet VM
+    /// look orphaned. Pass `false` for a read-only observer (auth/runner/capacity only).
     public static func detectors(
         config: GraftConfig,
         provider: any VMProvider,
         secrets: any SecretStore,
+        isTrunk: Bool = true,
         now: @escaping @Sendable () -> Date = { Date() }
     ) -> [any HealthDetector] {
         // Distinct GitHub configs across the pools (same dedup as `graft arborist`).
@@ -136,23 +141,28 @@ public enum HealthMonitorFactory {
             fleet = nil
         }
 
-        let state = StateManager()
-        let transientPhases: Set<String> = [
-            "acquiring", "provisioning", "starting", "connected", "deregistering", "stopping", "retrying",
-        ]
-        let stuckTimeout = TimeInterval(config.monitor?.slotStuckTimeoutSeconds ?? 300)
-
-        return [
+        // Network/controller-backed detectors work from anywhere with creds.
+        var detectors: [any HealthDetector] = [
             AuthDetector(probes: authProbes),
             RunnerDetector(scopes: runnerScopes, list: runnerList),
             CapacityDetector(desiredByOS: desiredByOS, capacity: capacity, fleet: fleet),
-            SupervisorSlotDetector(
-                slots: { state.load()?.slots ?? [] },
-                transientKinds: transientPhases, stuckTimeout: stuckTimeout, now: now),
-            DeadwoodDetector(
-                managedVMNames: { await provider.managedVMNames() },
-                trackedVMNames: { Set((state.load()?.runners ?? []).map(\.vm.name)) }),
         ]
+
+        // State-backed detectors — only meaningful on the trunk host.
+        if isTrunk {
+            let state = StateManager()
+            let transientPhases: Set<String> = [
+                "acquiring", "provisioning", "starting", "connected", "deregistering", "stopping", "retrying",
+            ]
+            let stuckTimeout = TimeInterval(config.monitor?.slotStuckTimeoutSeconds ?? 300)
+            detectors.append(SupervisorSlotDetector(
+                slots: { state.load()?.slots ?? [] },
+                transientKinds: transientPhases, stuckTimeout: stuckTimeout, now: now))
+            detectors.append(DeadwoodDetector(
+                managedVMNames: { await provider.managedVMNames() },
+                trackedVMNames: { Set((state.load()?.runners ?? []).map(\.vm.name)) }))
+        }
+        return detectors
     }
 
     /// The standard sinks: human log + JSONL + snapshot, plus a webhook sink when the

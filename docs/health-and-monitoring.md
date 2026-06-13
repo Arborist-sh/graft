@@ -17,6 +17,28 @@ graft arborist --tend --profile work  # a specific profile
 
 It runs against the active profile's pools. Stop it with Ctrl-C.
 
+## Where to run it
+
+The monitor belongs with the **supervisor** — the host where `graft run` lives (it holds
+the GitHub App key and writes `~/.graft/state`). Note this is *not* the trunk/controller
+(`graft tree plant`): on a real Orchard fleet the controller can be a separate Linux box
+with no key and no supervisor state. The monitor watches the controller + workers
+*remotely* through the Orchard API. Two ways to run it:
+
+- **`graft run --tend`** (recommended) — fold the monitor into the supervisor, in the same
+  process. It's unambiguously the trunk, shares the live state, and "run it next to your
+  runners" is one flag. This is how you'd run it on a server — under launchd/systemd, same
+  as `graft run --daemon`.
+- **`graft arborist --tend`** — a standalone monitor. On the trunk it sees everything; run
+  it anywhere else (e.g. a laptop pointed at the Orchard controller) and it drops to
+  **observer mode** — auth + runner + capacity only — so the state-backed checks can't
+  false-fire on an empty local state.
+
+For an Orchard fleet, one trunk monitor watches the whole tree *through the controller*
+(fleet capacity, paused workers, cluster-wide orphan VMs). The **worker Macs run no graft**,
+so their host-level vitals (disk, memory, `tart` health) aren't visible to the trunk — a
+per-worker agent that emits the same events is future work.
+
 ## What it watches
 
 Five detectors, each reusing a probe graft already has rather than paralleling it. The
