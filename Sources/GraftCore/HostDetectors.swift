@@ -13,6 +13,15 @@ public enum HostVitals {
         return (free, total)
     }
 
+    /// Names of stranded graft VMs in a `tart list` snapshot: `graft-`/`orchard-graft-`
+    /// prefixed VMs that are **stopped**. A live runner VM is `running`; a stopped one is an
+    /// ephemeral runner the worker never cleaned up (the controller has forgotten it, so
+    /// graft's controller-side sweep can't reach it). Base images / OCI refs lack the prefix.
+    public static func strandedGraftVMs(in vms: [TartVM]) -> [String] {
+        vms.filter { ($0.name.hasPrefix("graft-") || $0.name.hasPrefix("orchard-graft-")) && !$0.isRunning }
+           .map(\.name)
+    }
+
     /// Free + total bytes of physical memory. "Free" counts free + inactive + speculative
     /// pages (inactive is reclaimable, so counting it avoids crying wolf on a healthy Mac
     /// that's just using RAM as cache). Mach `host_statistics64` — no subprocess.
@@ -135,5 +144,31 @@ public struct CommandHealthDetector: HealthDetector {
         return [HealthEvent(
             severity: .critical, category: .host, checkID: checkID, subject: subject,
             message: message, suggestedAction: action)]
+    }
+}
+
+/// Flags **stranded tart VMs on a worker** — stopped `graft-`/`orchard-graft-` VMs the
+/// controller no longer tracks, so graft's controller-side sweep can't reach them. Only the
+/// worker can see these (it's the host running tart); left alone they leak disk. One event
+/// per VM, keyed on the VM name so each clears independently as it's reclaimed. Inject
+/// `leaked` for tests; the real wiring filters `Tart.list()` with `HostVitals.strandedGraftVMs`.
+public struct WorkerOrphanDetector: HealthDetector {
+    let worker: String
+    let leaked: @Sendable () async -> [String]
+    public var name: String { "host" }
+
+    public init(worker: String, leaked: @escaping @Sendable () async -> [String]) {
+        self.worker = worker
+        self.leaked = leaked
+    }
+
+    public func probe() async -> [HealthEvent] {
+        await leaked().map { vm in
+            HealthEvent(
+                severity: .warn, category: .host, checkID: "orphan-leaf", subject: vm,
+                message: "stranded tart VM on \(worker) — stopped, the controller no longer tracks it (leaking disk)",
+                detail: ["vm": vm, "worker": worker],
+                suggestedAction: "reclaim it: `tart delete \(vm)`")
+        }
     }
 }

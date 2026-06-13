@@ -60,11 +60,34 @@ struct HostDetectorTests {
         #expect((mem?.free ?? -1) >= 0)
     }
 
+    @Test("strandedGraftVMs picks only stopped graft / orchard-graft VMs")
+    func stranded() {
+        let vms = [
+            TartVM(name: "orchard-graft-live-0", state: "running", source: "local", size: nil),
+            TartVM(name: "orchard-graft-dead-0", state: "stopped", source: "local", size: nil),
+            TartVM(name: "graft-localdead", state: "stopped", source: "local", size: nil),
+            TartVM(name: "g1-mobile-ci", state: "stopped", source: "local", size: nil),   // base image
+            TartVM(name: "ghcr.io/cirruslabs/x", state: "stopped", source: "OCI", size: nil),
+        ]
+        #expect(Set(HostVitals.strandedGraftVMs(in: vms)) == ["orchard-graft-dead-0", "graft-localdead"])
+    }
+
+    @Test("WorkerOrphanDetector emits one event per stranded VM, quiet when none")
+    func workerOrphan() async {
+        #expect(await WorkerOrphanDetector(worker: "mac-1", leaked: { [] }).probe().isEmpty)
+
+        let det = WorkerOrphanDetector(worker: "mac-1", leaked: { ["orchard-graft-aaa-0", "orchard-graft-bbb-0"] })
+        let events = await det.probe()
+        #expect(events.count == 2)
+        #expect(Set(events.compactMap(\.subject)) == ["orchard-graft-aaa-0", "orchard-graft-bbb-0"])
+        #expect(events.allSatisfy { $0.category == .host && $0.checkID == "orphan-leaf" })
+    }
+
     @Test("branch + controller factories produce host detectors")
     func factories() {
         let branch = HealthMonitorFactory.branchDetectors(name: "mac-1")
         let trunk = HealthMonitorFactory.controllerDetectors(name: "ctrl", responding: { true })
-        #expect(branch.count == 3)
+        #expect(branch.count == 4)   // disk, memory, tart-health, worker-orphan
         #expect(trunk.count == 3)
         #expect(branch.allSatisfy { $0.name == "host" })
         #expect(trunk.allSatisfy { $0.name == "host" })

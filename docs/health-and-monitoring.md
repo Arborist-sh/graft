@@ -43,7 +43,7 @@ actually see:
 | Process | Vantage | `--tend` detectors |
 |---|---|---|
 | `graft run` | supervisor / demand | auth · runner · capacity · wedged-slot · deadwood |
-| `graft tree branch` | worker host | disk · memory · `tart` health |
+| `graft tree branch` | worker host | disk · memory · `tart` health · stranded VMs |
 | `graft tree plant` | controller host | disk · memory · controller-responding |
 
 The supervisor sees a worker is *paused* (the symptom) through the controller API; the
@@ -65,7 +65,7 @@ about them.
 | `capacity` | drought | configured count exceeds host capacity; a fleet worker is **paused**; the **controller is unreachable** | `provider.capacity`, Orchard `report()` |
 | `leaf` | wilt | a slot **wedged** in a transient phase (booting/provisioning/…) past a timeout | persisted slot phases |
 | `supervisor` | deadwood | a graft VM the backend still has that **no slot owns** (a leak) | `provider.managedVMNames()` |
-| `host` | soil | low disk · memory pressure · `tart`/controller unhealthy (branch/trunk agents) | FileManager, Mach, `tart list` |
+| `host` | soil | low disk · memory pressure · `tart`/controller unhealthy · stranded worker VMs (branch/trunk agents) | FileManager, Mach, `tart list` |
 
 ### Severity
 

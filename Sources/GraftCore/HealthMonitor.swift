@@ -189,6 +189,9 @@ public enum HealthMonitorFactory {
                 message: "`tart list` failed — Virtualization.framework/Tart may be wedged; this branch can't boot leaves",
                 action: "check tart and that a GUI login session is active (VF won't boot a VM without one)",
                 isHealthy: { ((try? await Shell.run("tart", ["list"], timeout: .seconds(10)))?.succeeded) ?? false }),
+            WorkerOrphanDetector(worker: name, leaked: {
+                HostVitals.strandedGraftVMs(in: (try? await Tart.list()) ?? [])
+            }),
         ]
     }
 
