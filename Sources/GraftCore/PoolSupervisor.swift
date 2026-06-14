@@ -197,6 +197,8 @@ public actor PoolSupervisor {
                     Log.info("[\(tag)] re-adopted \(adopted.name) — monitoring to completion")
                     report(.ready, adopted.name)
                     await monitorRunner(tag: tag, pool: pool.name, vm: adopted.name, github: github, target: try? gh.parsedTarget())
+                    report(.deregistering, adopted.name)
+                    await deregisterByName(adopted.name, poolName: pool.name)
                     report(.stopping, adopted.name)
                     await releaseOnce(adopted)
                     continue
@@ -426,6 +428,7 @@ public actor PoolSupervisor {
             switch await leafLiveness(record) {
             case .offline:
                 Log.info("reconcile: releasing finished/dead leaf \(record.vm.name)")
+                await deregisterByName(record.vm.name, poolName: record.pool)
                 try? await provider.release(record.vm)
             case .online, .unknown:
                 Log.info("reconcile: re-adopting live leaf \(record.vm.name)")
@@ -474,6 +477,18 @@ public actor PoolSupervisor {
             if case .online = await runnerLiveness(name: name, github: github(gh.appId), target: target) { return true }
         }
         return false
+    }
+
+    /// Deregister a leaf's GitHub runner by name (we don't have the runnerID for re-adopted
+    /// or reconciled leaves). Looks it up via the pool's GitHub config, then deletes by id —
+    /// so a husk doesn't linger after we tear the leaf down. No-op if it's already gone.
+    private func deregisterByName(_ name: String, poolName: String) async {
+        guard let pool = config.pools.first(where: { $0.name == poolName }),
+              let gh = config.gitHub(for: pool),
+              let target = try? gh.parsedTarget(),
+              let runners = try? await github(gh.appId).listRunners(target: target),
+              let runner = runners.first(where: { $0.name == name }) else { return }
+        await deregister(runnerID: runner.id, target: target, via: github(gh.appId))
     }
 
     /// Stop every tracked VM — the reliable lever for breaking a slot blocked in
