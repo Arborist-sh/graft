@@ -194,6 +194,23 @@ extension Tree {
         _ = try? await Shell.run("pkill", ["-KILL", "-f", "orchard worker run.*--name \(name)"])
     }
 
+    /// On branch shutdown, sweep the leaves this worker booted. Orchard does **not** reap its
+    /// tart VMs when the worker exits — it leaves them **running** and stranded on the host
+    /// (design §3), which is why a bare Ctrl-C leaks VMs. These are `orchard-graft-*` tart VMs.
+    /// Stopping a running leaf aborts whatever job it's mid-flight on — the accepted
+    /// worker-bounce behavior (§0.7); a `--drain` that waits for jobs to finish is future work.
+    static func sweepBranchLeaves() async {
+        guard let vms = try? await Tart.list() else { return }
+        let leaves = vms.filter { $0.name.hasPrefix("orchard-graft-") }
+        guard !leaves.isEmpty else { return }
+        printErr(ANSI.dim("    sweeping \(leaves.count) leaf VM(s) the branch booted…"))
+        for vm in leaves {
+            try? await Tart.stop(name: vm.name)
+            try? await Tart.delete(name: vm.name)
+        }
+        printErr(ANSI.green("    leaves swept."))
+    }
+
     /// Error for "a trunk is already running here" — names the PID and how to clear it.
     static func trunkAlreadyRunning(pid: Int32) -> GraftError {
         GraftError("a trunk is already running here (pid \(pid)) — it holds the controller's database lock.\n" +
@@ -332,8 +349,10 @@ extension Tree {
 
             let code = try await controller.value
             branch.cancel()
-            // The branch worker spawned after the trap → may ignore SIGTERM; force it down.
+            // The branch worker spawned after the trap → may ignore SIGTERM; force it down,
+            // then sweep the leaves it booted (Orchard leaves them running — design §3).
             await Tree.killWorker(name: "bonsai")
+            await Tree.sweepBranchLeaves()
             if code != 0 && !stopped.isSet { throw ExitCode(code) }
         }
     }
@@ -389,10 +408,29 @@ extension Tree {
             defer { monitorTask?.cancel() }
 
             printErr(ANSI.dim("    branch live — Ctrl-C to drop it.\n"))
-            let code = try await Shell.runStreaming("orchard", args, onLine: { line in
-                FileHandle.standardError.write(Data((line + "\n").utf8))
-            })
-            if code != 0 { throw ExitCode(code) }
+
+            // Run the worker in its own task and trap Ctrl-C so we SIGTERM it AND sweep the
+            // leaves it booted — Orchard leaves its tart VMs running on worker exit, so without
+            // this a Ctrl-C strands them on the host. Trap installed after the worker execs so
+            // it keeps the default SIGTERM disposition (not graft's SIG_IGN) — see SignalTrap.
+            let worker = Task {
+                try await Shell.runStreaming("orchard", args, onLine: { line in
+                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                })
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            let stopped = AtomicFlag()
+            let sources = SignalTrap.install {
+                printErr("\n" + ANSI.green("🪓  dropping the branch…"))
+                stopped.set()
+                worker.cancel()
+            }
+            defer { sources.forEach { $0.cancel() } }
+
+            let code = try await worker.value
+            // On a user-initiated drop, clean up the leaves the worker left stranded.
+            if stopped.isSet { await Tree.sweepBranchLeaves() }
+            if code != 0 && !stopped.isSet { throw ExitCode(code) }
         }
     }
 
