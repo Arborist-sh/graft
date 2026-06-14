@@ -543,6 +543,7 @@ sequenceDiagram
 | **NEW**: worker reconnect-degraded | matrix #5 |
 | **NEW**: failed-leaf detector | matrix #8, §5 gap |
 | **NEW**: staleThreshold 120s → 180s | §1.5.5 (match `workerOfflineTimeout`) |
+| **NEW**: Linux guests (future epic) | 📋 unproven — plumbing is OS-aware (runner arch, capacity, Orchard `--os linux`) but local `tart exec` is macOS-guest only, runner deps (`installdependencies.sh`) + run-as-root aren't handled, and the image builder is macOS-only. **macOS is the supported target.** |
 
 ---
 

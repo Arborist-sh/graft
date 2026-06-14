@@ -5,8 +5,9 @@
   </picture>
 </p>
 
-One golden [Tart](https://tart.run) VM image for macOS & Linux that powers both your
+One golden [Tart](https://tart.run) VM image for macOS that powers both your
 **dev environment** and your **ephemeral CI runners**. Open-source and fleet-ready.
+*(Linux guests are a planned future epic — see [Status](#status); macOS is the supported target today.)*
 
 Graft does three things off one `.graft` seed:
 
@@ -46,9 +47,10 @@ multi-host fleets and a shared dev/CI image.
 | Image builder + `graft nest` + `.graft` recipes | ✅ built & tested (real image baked end-to-end) |
 | Orchard multi-host backend | ✅ verified end-to-end against a live controller — [docs/orchard.md](docs/orchard.md) |
 | Health monitor (`--tend` on run / tree branch / tree plant) | ✅ built & unit-tested — detection-only, per-role agents, [docs/health-and-monitoring.md](docs/health-and-monitoring.md) |
+| **Linux guests** | 📋 **planned (future epic)** — the OS-aware plumbing exists (runner arch, capacity, Orchard `--os linux`), but it's **unproven and has known gaps** (local `tart exec` is macOS-guest only; runner deps + run-as-root aren't handled; image builder is macOS-only). **macOS is the supported target.** |
 
-Built and driven through end-to-end; the parts that need real GitHub credentials or
-a booted VM to fully prove are flagged in code (`TODO(real-VM)`).
+Built and driven through end-to-end **on macOS**; the parts that need real GitHub
+credentials or a booted VM to fully prove are flagged in code (`TODO(real-VM)`).
 
 ## Requirements
 
@@ -68,7 +70,8 @@ sudo cp .build/release/graft /usr/local/bin/graft
 
 Apple Silicon enforces a **hard limit of 2 concurrent macOS VMs per host** in the
 XNU kernel. Graft respects it: macOS pools are capped at 2 VMs per host, budgeted
-across all pools. **Linux VMs are uncapped** (bounded by RAM/cores). To scale macOS
+across all pools. (Linux guests *would* be uncapped, bounded by RAM/cores — but Linux
+is a planned future epic, not yet validated; see [Status](#status).) To scale macOS
 beyond 2, add hosts — that's what the Orchard backend is for.
 
 ## Setup
