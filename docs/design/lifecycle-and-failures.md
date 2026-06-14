@@ -538,7 +538,63 @@ sequenceDiagram
 | **GFT-18** elastic supervision | ✅ **DONE (Aspen):** §2.2 slot machine (spawn-per-desired + reservation throttle + live ceiling refresh), matrix #1/#3 |
 | **GFT-20** deadwood false-positive | ✅ **DONE (Aspen):** ownership = `runners ∪ slots[].vmName` (`PoolState.ownedVMNames`); §5 in-flight leaf, matrix #9 |
 | **GFT-21** controller lock on Ctrl-C | ✅ **DONE (Aspen):** §2.4, §3 controller (signal trap + detect-and-refuse) |
+| **GFT-19** demand-driven autoscaling | 📐 **PROPOSAL** → §9 (builds on the GFT-18 elastic foundation) |
 | **NEW**: worker graceful drain | §3 worker "should" |
 | **NEW**: worker reconnect-degraded | matrix #5 |
 | **NEW**: failed-leaf detector | matrix #8, §5 gap |
 | **NEW**: staleThreshold 120s → 180s | §1.5.5 (match `workerOfflineTimeout`) |
+
+---
+
+## 9. GFT-19 — Demand-driven autoscaling (📐 PROPOSAL, not built)
+
+> **Status: design proposal for review.** Nothing here is implemented. It builds directly on the GFT-18 elastic foundation (§2.2): elastic supervision already makes the *realized* slot count track live **capacity**; autoscaling makes the *desired* count track live **demand**. Two layers, one fleet.
+
+### 9.1 The idea
+Today `pool.count` is a fixed desired-state. Autoscaling makes the desired count a function of **demand** — how many jobs are queued for this pool right now — clamped to `[min, max]`. The elastic supervisor then realizes that target against capacity exactly as it does today. So:
+
+```
+realized = min( demand-driven desired , fleet ceiling )
+           └─ GFT-19 sets this ─┘     └─ GFT-18 throttles to this ─┘
+```
+
+`min = max = count` is the static special case (today's behavior). `min = 0` enables **scale-to-zero** (idle fleet costs nothing; first job pays a cold-start boot).
+
+### 9.2 Where demand comes from (the key design fork)
+| Source | How | Pros | Cons |
+|---|---|---|---|
+| **A. Poll GitHub** (proposed v1) | every N s, count **queued** jobs whose `runs-on` labels match the pool, + jobs already running on our runners | no inbound endpoint; uses the App creds we already have | latency (poll interval); REST cost / rate limits; org-wide queued-job enumeration is awkward (easy for repo targets) |
+| **B. `workflow_job` webhook** (later) | GitHub pushes `queued`/`in_progress`/`completed` events to a graft receiver | real-time; rate-limit-free; the canonical Actions-autoscaler signal (ARC uses it) | needs a public HTTPS endpoint + secret + a receiver process — real infra |
+
+**Recommendation: ship A (poll) first** — it's self-contained and fits the single-binary model; graduate to B when latency/scale demands it. Scope v1 polling to **repo targets** (org-wide queued enumeration is a separate problem).
+
+### 9.3 The control loop
+```mermaid
+flowchart TD
+    P["poll: queued jobs matching pool labels + jobs running on our runners"] --> D["desired = clamp(demand, min, max)"]
+    D --> C{"desired vs live slot count?"}
+    C -->|"desired higher"| U["spawn (desired minus live) new slot tasks"]
+    C -->|"desired lower"| S["mark (live minus desired) idle slots to drain"]
+    C -->|"equal"| H["hold"]
+    U --> E["GFT-18 elastic supervisor fills them as capacity allows"]
+    S --> R["after scale-down delay, cancel parked or idle slots only"]
+    R --> N["NEVER cancel a slot whose leaf is busy (cardinal rule)"]
+```
+
+### 9.4 What has to change (implementation sketch)
+- **Config:** optional per-pool `autoscale: { min, max, pollSeconds, scaleDownDelaySeconds }` (`decodeIfPresent` → absent means static `count`, fully back-compat).
+- **Supervisor:** today `run()` spawns a fixed `pool.count` slot tasks. Autoscaling needs a **dynamic slot manager** — a per-pool supervising task that adds/removes slot tasks to match `desired`. The reservation accounting (§2.2) already makes adding slots safe; removing = cancel a *parked or idle* slot (its `runSlot` loop breaks on cancellation; a busy slot is left to finish, then not replaced).
+- **Demand poller:** a `DemandSource` protocol (poll impl now, webhook impl later), label-matched queued-job counting via the existing `GitHubAppClient`.
+- **Dashboard:** show `desired (autoscaled) / min–max` per pool so the count isn't mistaken for misconfiguration.
+
+### 9.5 Stability & safety
+- **Hysteresis:** scale **up** fast (burst responsiveness), scale **down** slow (a `scaleDownDelay` cooldown) so a brief lull doesn't tear down a warm pool that's about to be hit again — classic anti-flap.
+- **Cardinal rule unchanged:** scale-down never cancels a slot whose leaf is **busy** on GitHub. It only retires parked/idle slots. (Same restraint as the safe-reaper, §0.3/§5.)
+- **Cold-start at zero:** with `min = 0`, the first queued job waits one boot cycle. Acceptable for cost-saving pools; set `min ≥ 1` for latency-sensitive ones.
+
+### 9.6 Open questions (Brian's calls — policy, not mechanism)
+1. **Label→pool matching:** exact-set match on the pool's resolved labels, or subset? (A queued job's `runs-on` must map to exactly one pool.)
+2. **Targets:** v1 repo-only (poll is easy), or is org-wide demand needed day one?
+3. **Defaults:** `min` default 0 (scale-to-zero) or 1 (always-warm)? `scaleDownDelay` default (e.g. 5 min)?
+4. **Config shape:** keep `count` and add `autoscale` alongside (count = the static fallback), or replace `count` with `min`/`max` (count == min == max)?
+5. **Demand math:** `desired = clamp(queued + runningOnOurRunners, min, max)` — does counting our own running runners (so we don't double-provision for jobs already being served) match your mental model?
