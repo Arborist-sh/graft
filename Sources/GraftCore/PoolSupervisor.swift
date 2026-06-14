@@ -325,12 +325,15 @@ public actor PoolSupervisor {
     /// duplicate `tart stop`/`delete` that would collide on tart's per-VM lock.
     private func releaseOnce(_ vm: RunningVM) async {
         guard releasing.insert(vm.name).inserted else { return }
-        untrack(vm.name)
         do {
             try await provider.release(vm)
+            // Untrack only after a confirmed delete. If release fails (e.g. the controller
+            // is down), the VM is still running and still ours — keep it tracked so it isn't
+            // mislabeled as orphan `deadwood` (untrack-then-failed-delete was the leak), and
+            // so a later reconcile can re-adopt or re-delete it.
+            untrack(vm.name)
         } catch {
-            // Surface it — a swallowed release failure leaves a VM holding a quota slot.
-            Log.warn("release of \(vm.name) failed: \(error)")
+            Log.warn("release of \(vm.name) failed: \(error) — keeping it tracked for retry")
         }
         releasing.remove(vm.name)
     }
