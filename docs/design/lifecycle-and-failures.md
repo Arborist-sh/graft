@@ -550,6 +550,14 @@ sequenceDiagram
 
 > **Status: design proposal for review.** Nothing here is implemented. It builds directly on the GFT-18 elastic foundation (§2.2): elastic supervision already makes the *realized* slot count track live **capacity**; autoscaling makes the *desired* count track live **demand**. Two layers, one fleet.
 
+### 9.0 Two scaling layers (and which one this is)
+Scaling has **two independent layers** — and the proposal below is only the first:
+
+- **Layer 1 — runner/leaf autoscaling (this proposal).** Boot or destroy **leaves** (VMs) on the branches **already connected** to the tree. No hosts are created — it just uses the capacity the live fleet advertises. Fast (seconds to a minute), and bounded by the current fleet's ceiling. `min = 0` here means **zero VMs** when idle — it frees host RAM/CPU/VM-quota, but the **hosts keep running** (and, in the cloud, keep billing).
+- **Layer 2 — host/branch autoscaling (separate future epic, §9.8).** Create or destroy the **hosts** (Macs) that run `graft tree branch` and join the tree. This is what grows the fleet *beyond* its current ceiling and delivers **true cost-scale-to-zero**. Bigger, infra-coupled.
+
+The control plane is already built for layer 2: orchard tracks branches joining/leaving and reschedules, and the GFT-18 elastic supervisor already follows capacity up/down with no restart — and graft already has the join command (`graft tree branch <url>`). The *only* missing piece is **host lifecycle**: who creates and terminates the Macs.
+
 ### 9.1 The idea
 Today `pool.count` is a fixed desired-state. Autoscaling makes the desired count a function of **demand** — how many jobs are queued for this pool right now — clamped to `[min, max]`. The elastic supervisor then realizes that target against capacity exactly as it does today. So:
 
@@ -558,7 +566,7 @@ realized = min( demand-driven desired , fleet ceiling )
            └─ GFT-19 sets this ─┘     └─ GFT-18 throttles to this ─┘
 ```
 
-`min = max = count` is the static special case (today's behavior). `min = 0` enables **scale-to-zero** (idle fleet costs nothing; first job pays a cold-start boot).
+`min = max = count` is the static special case (today's behavior). `min = 0` enables **scale-to-zero of leaves** (zero VMs when idle → frees host capacity; first job pays a cold-start boot). *Note: this zeroes VMs, not hosts — true cost-scale-to-zero needs layer 2 (§9.0 / §9.8).*
 
 ### 9.2 Where demand comes from (the key design fork)
 | Source | How | Pros | Cons |
@@ -598,3 +606,14 @@ flowchart TD
 3. **Defaults:** `min` default 0 (scale-to-zero) or 1 (always-warm)? `scaleDownDelay` default (e.g. 5 min)?
 4. **Config shape:** keep `count` and add `autoscale` alongside (count = the static fallback), or replace `count` with `min`/`max` (count == min == max)?
 5. **Demand math:** `desired = clamp(queued + runningOnOurRunners, min, max)` — does counting our own running runners (so we don't double-provision for jobs already being served) match your mental model?
+
+### 9.8 Layer 2 — host autoscaling (sketch, not designed yet)
+To grow the fleet *itself*, something must provision Mac **hosts**, run `graft tree branch <trunk>` on boot (cloud-init / user-data), and drain + terminate them when demand drops. Three shapes:
+
+| Approach | Who provisions hosts | Trade-off |
+|---|---|---|
+| **(a) graft drives it** — a pluggable `HostProvisioner` (EC2-Mac driver first) | graft | most turnkey; couples graft to a cloud provider |
+| **(b) graft emits, cloud scales** — graft publishes queue-depth/utilization; an EC2 Auto Scaling Group of Mac hosts scales on it, each host auto-joins via cloud-init | the cloud (ASG) | graft stays infra-agnostic; mirrors how ARC/k8s do it (cluster-autoscaler grows nodes, controller scales pods) |
+| **(c) hybrid** — a thin host-driver seam so static on-prem Macs and elastic cloud Macs coexist | both | most flexible; more surface |
+
+**The economics that dominate this (EC2 Mac):** dedicated Mac hosts bill a **24-hour minimum**. So "a host per job" is economically pointless — host scaling is necessarily **coarse** (hold a host ≥ 24h), while **layer 1 is the fine-grained, second-by-second knob**. That split is the reason to keep the layers separate: day-to-day elasticity = runners on a roughly-fixed host pool (layer 1); capacity planning = hosts, adjusted slowly (layer 2). Lean toward **(b)/(c)** — let the cloud do host provisioning, graft provide the demand signal + the branch agent — rather than baking a cloud SDK into graft.
