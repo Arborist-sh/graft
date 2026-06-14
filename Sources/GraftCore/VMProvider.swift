@@ -1,5 +1,9 @@
 import Foundation
 
+/// A fresh graft-managed VM name. Shared so every backend + the supervisor name VMs
+/// identically — the `graft-` prefix is what the orphan sweeps filter on.
+public func makeGraftVMName() -> String { "graft-" + UUID().uuidString.lowercased() }
+
 /// Per-pool VM sizing — CPU cores + memory (MB). `nil` means "let the backend
 /// default." A pool declares these for its workload (a lint pool is small, an e2e pool
 /// is fat), independent of the image: same toolchain image, different shapes. On the
@@ -30,13 +34,14 @@ public protocol VMProvider: Sendable {
     /// For local Tart + macOS this is Apple's hard 2-VM ceiling minus what's running.
     func capacity(for os: GuestOS) async -> Int
 
-    /// Clone + boot a VM from `image`, wait for it to get an IP, and return it.
+    /// Clone + boot a VM named `name` from `image`, wait for it to get an IP, and return it.
     /// `os` is declared by the caller (from pool config) — providers don't probe.
-    /// `mounts` are host directory shares passed to the VM at boot; `network` selects
-    /// the VM's networking mode (default shared NAT); `resources` sizes the leaf
-    /// (CPU/memory) per the pool — on Orchard it's also requested from the scheduler so
-    /// a branch won't be over-packed.
-    func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM
+    /// `mounts` are host directory shares; `network` selects the VM's networking mode;
+    /// `resources` sizes the leaf (CPU/memory) per the pool. `startupScript`, if given, is
+    /// run on the leaf **detached** (the runner bootstrap): Orchard delivers it via the VM's
+    /// StartupScript (the worker runs it, local to the VM); local Tart runs it via `tart exec`.
+    /// The supervisor never holds a connection to the guest — it monitors via GitHub afterward.
+    func acquire(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, startupScript: String?, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM
 
     /// Stop and destroy a VM. Idempotent where possible — releasing an
     /// already-gone VM should not throw.
@@ -74,14 +79,15 @@ extension VMProvider {
     /// Default: this backend doesn't track managed VMs by name.
     public func managedVMNames() async -> [String] { [] }
 
-    /// Convenience: acquire with default networking + backend-default sizing, no progress.
+    /// Convenience: a fresh name, default networking + backend-default sizing, no startup
+    /// script, no progress. (For one-off VMs like `graft leaf create`.)
     public func acquire(image: String, os: GuestOS, mounts: [Mount] = []) async throws -> RunningVM {
-        try await acquire(image: image, os: os, mounts: mounts, network: .nat, resources: .none, onProgress: nil)
+        try await acquire(name: makeGraftVMName(), image: image, os: os, mounts: mounts, network: .nat, resources: .none, startupScript: nil, onProgress: nil)
     }
 
-    /// Convenience: explicit sizing, no progress callback (callers that don't show phases).
+    /// Convenience: explicit sizing, no startup script, no progress callback.
     public func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources) async throws -> RunningVM {
-        try await acquire(image: image, os: os, mounts: mounts, network: network, resources: resources, onProgress: nil)
+        try await acquire(name: makeGraftVMName(), image: image, os: os, mounts: mounts, network: network, resources: resources, startupScript: nil, onProgress: nil)
     }
 
     /// Convenience: unbounded exec (kept for callers that don't need a timeout).

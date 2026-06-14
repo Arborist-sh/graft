@@ -28,8 +28,7 @@ public struct LocalTartProvider: VMProvider {
         }
     }
 
-    public func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {
-        let name = Self.namePrefix + UUID().uuidString.lowercased()
+    public func acquire(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, startupScript: String?, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {
         try await Tart.clone(image: image, to: name)
         do {
             // Per-pool sizing: resize the clone before boot (overrides the image's bake).
@@ -43,7 +42,16 @@ public struct LocalTartProvider: VMProvider {
             onProgress?(.booting)   // local Tart: clone done, the guest is now coming up
             try Tart.run(name: name, mounts: mounts, network: network)
             let ip = try await Tart.waitForIP(name: name)
-            return RunningVM(name: name, ip: ip, os: os)
+            let vm = RunningVM(name: name, ip: ip, os: os)
+            // Same host as the guest, so we launch the runner ourselves — detached, so it
+            // survives this exec closing — then monitor via GitHub like the fleet path.
+            if let startupScript {
+                try await waitForGuest(vm)
+                let b64 = Data(startupScript.utf8).base64EncodedString()
+                let launch = "echo \(b64) | base64 -d > /tmp/graft-startup.sh; setsid nohup bash /tmp/graft-startup.sh >/tmp/graft-runner.log 2>&1 </dev/null & echo graft-launched"
+                _ = try await exec(on: vm, ["bash", "-lc", launch], timeout: .seconds(60))
+            }
+            return vm
         } catch {
             // Boot or IP wait failed — don't leak the clone.
             try? await Tart.stop(name: name)

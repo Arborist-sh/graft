@@ -204,7 +204,7 @@ public actor PoolSupervisor {
                     }
                     Task { await self.recordPhase(tag: tag, pool: pool.name, vm: nil, phase: phase) }
                 }
-                let vm = try await provider.acquire(image: pool.image, os: pool.os, mounts: pool.mounts ?? [], network: pool.network ?? .nat, resources: pool.resources, onProgress: onProgress)
+                let vm = try await provider.acquire(name: makeGraftVMName(), image: pool.image, os: pool.os, mounts: pool.mounts ?? [], network: pool.network ?? .nat, resources: pool.resources, startupScript: nil, onProgress: onProgress)
                 track(vm, pool: pool.name)
                 Log.info("[\(tag)] acquired \(vm.name) (\(vm.ip))")
 

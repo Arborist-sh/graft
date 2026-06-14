@@ -62,11 +62,19 @@ public struct OrchardProvider: VMProvider {
         return min(report.freeSlots, maxVMs)
     }
 
-    public func acquire(image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {
-        let name = Self.namePrefix + UUID().uuidString.lowercased()
-        let args = Self.createArgs(name: name, image: image, os: os, mounts: mounts, network: network, resources: resources)
+    public func acquire(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, startupScript: String?, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {
+        // Hand the runner bootstrap to the VM at create time via Orchard's StartupScript —
+        // the *worker* (local to the VM) runs it once the guest is up. We never exec in.
+        var scriptPath: String?
+        if let startupScript {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("graft-startup-\(name).sh")
+            try startupScript.write(to: url, atomically: true, encoding: .utf8)
+            scriptPath = url.path
+        }
+        let args = Self.createArgs(name: name, image: image, os: os, mounts: mounts, network: network, resources: resources, startupScriptPath: scriptPath)
 
         let created = try await Shell.run(Self.executable, args, environment: env, timeout: .seconds(30))
+        if let scriptPath { try? FileManager.default.removeItem(atPath: scriptPath) }
         guard created.succeeded else {
             throw GraftError("`orchard create vm` failed: \(Self.message(created))")
         }
@@ -309,7 +317,7 @@ public struct OrchardProvider: VMProvider {
     }
 
     /// The full `orchard create vm …` argv for an ephemeral runner VM.
-    static func createArgs(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources = .none) -> [String] {
+    static func createArgs(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources = .none, startupScriptPath: String? = nil) -> [String] {
         // No --restart-policy: Orchard already defaults to "Never" (never auto-restart),
         // which is what ephemeral runners want. Passing it is fragile — the API only
         // accepts the capitalized "Never" and rejects the lowercase form.
@@ -327,6 +335,7 @@ public struct OrchardProvider: VMProvider {
         }
         for mount in mounts { args += ["--host-dirs", mount.tartDirArg] }
         args += network.orchardFlags
+        if let startupScriptPath { args += ["--startup-script", "@\(startupScriptPath)"] }
         args.append(name)
         return args
     }
