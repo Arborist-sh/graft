@@ -146,4 +146,43 @@ struct PoolSupervisorTests {
         let persisted = StateManager(directory: stateDir).load()
         #expect(persisted?.runners.isEmpty ?? true)
     }
+
+    @Test("re-adopts a still-online leaf from a prior run instead of re-acquiring")
+    func reAdoptsLiveLeaf() async throws {
+        let recorder = Recorder()
+        let provider = MockProvider(recorder: recorder, macCapacity: 2)
+        let stateDir = tempStateDir()
+        defer { try? FileManager.default.removeItem(at: stateDir) }
+
+        // Seed state as if a prior run left one leaf for pool "mac", and mark its runner
+        // minted so the mock GitHub reports it online (still live).
+        let leaf = RunningVM(name: "graft-leftover-1", ip: "10.0.0.9", os: .macOS)
+        let state = StateManager(directory: stateDir)
+        try state.save(PoolState(runners: [RunnerRecord(vm: leaf, pool: "mac", startedAt: Date())],
+                                 slots: [], updatedAt: Date()))
+        await recorder.mint(leaf.name)
+
+        let cfg = GraftConfig(pools: [
+            PoolConfig(name: "mac", image: "i", os: .macOS, count: 1,
+                       github: GitHubConfig(appId: 1, target: "org:acme")),
+        ])
+        let supervisor = PoolSupervisor(
+            config: cfg, provider: provider,
+            github: { _ in MockJIT(recorder: recorder) },
+            state: state)
+        let task = Task { await supervisor.run() }
+
+        // The leftover leaf is re-adopted (tracked again), not re-acquired.
+        for _ in 0..<300 {
+            if (state.load()?.runners.contains { $0.vm.name == leaf.name }) == true { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect((state.load()?.runners.contains { $0.vm.name == leaf.name }) == true)
+        #expect(await recorder.acquired.isEmpty)   // the slot adopted it — no fresh acquire
+
+        // On shutdown the adopted leaf is torn down.
+        task.cancel()
+        await task.value
+        #expect(await recorder.released.contains(leaf.name))
+    }
 }

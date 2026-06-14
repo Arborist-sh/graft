@@ -83,6 +83,9 @@ public actor PoolSupervisor {
     private let state: StateManager
     private let status: RunnerStatusReporter?
     private var runners: [String: RunnerRecord] = [:]
+    /// Leaves re-adopted on restart (their runner was still online), queued by pool for a
+    /// slot to monitor through to completion instead of acquiring a fresh leaf.
+    private var adoptable: [String: [RunningVM]] = [:]
     /// VMs currently being torn down — so the shutdown watcher and a slot's own
     /// teardown can't both fire `tart stop`/`delete` on the same VM and wedge tart
     /// on its per-VM lock inside an un-cancellable `Shell.run`.
@@ -177,6 +180,17 @@ public actor PoolSupervisor {
 
         while !Task.isCancelled {
             do {
+                // Re-adopt a leaf from a prior run before acquiring a fresh one: monitor it to
+                // completion and tear it down, so a supervisor restart doesn't kill a running
+                // job (and the re-adopted leaf counts toward the pool's desired count).
+                if let adopted = claimAdoptable(pool: pool.name) {
+                    Log.info("[\(tag)] re-adopted \(adopted.name) — monitoring to completion")
+                    report(.ready, adopted.name)
+                    await monitorRunner(tag: tag, pool: pool.name, vm: adopted.name, github: github, target: try? gh.parsedTarget())
+                    report(.stopping, adopted.name)
+                    await releaseOnce(adopted)
+                    continue
+                }
                 // Park until the fleet has room. Firing `acquire` into a 0-capacity fleet
                 // (e.g. every Orchard worker gone) just churns create→pending→timeout→delete;
                 // instead wait and resume when capacity returns. Local Tart's capacity is its
@@ -384,19 +398,65 @@ public actor PoolSupervisor {
 
     // MARK: Lifecycle
 
-    /// Destroy leftovers from a prior run. With `tart exec`, the watching process
-    /// died with us, so any surviving graft VM is a dead-runner husk — clean slate,
-    /// then fill fresh. (Reattach isn't meaningful without a live exec channel.)
+    /// On startup, reconcile leftover leaves from the last run against GitHub: a leaf whose
+    /// runner is still **online** is re-adopted (kept + queued for a slot to monitor through
+    /// to completion — a supervisor restart must not kill a running job); one whose runner is
+    /// **offline** is released (its job finished or it died). GitHub-unreachable ⇒ keep (never
+    /// murder a possible live job). Then sweep graft VMs the backend has that we aren't
+    /// tracking — but only ones no target shows online.
     private func reconcile() async {
         for record in state.load()?.runners ?? [] {
-            Log.info("reconcile: releasing leftover \(record.vm.name)")
-            try? await provider.release(record.vm)
+            switch await leafLiveness(record) {
+            case .offline:
+                Log.info("reconcile: releasing finished/dead leaf \(record.vm.name)")
+                try? await provider.release(record.vm)
+            case .online, .unknown:
+                Log.info("reconcile: re-adopting live leaf \(record.vm.name)")
+                runners[record.vm.name] = record
+                adoptable[record.pool, default: []].append(record.vm)
+            }
         }
-        // Sweep any graft-* VMs that never made it into state (crash before persist).
-        await sweepGraftVMs()
-        runners.removeAll()
+        // Crash-before-persist orphans: sweep graft VMs we aren't tracking — but never one
+        // whose runner is still online somewhere (it may be running a real job).
+        let tracked = Set(runners.keys)
+        for name in await provider.managedVMNames() where !tracked.contains(name) {
+            if await anyTargetOnline(name: name) {
+                Log.info("reconcile: leaving live orphan \(name) (runner online)")
+            } else {
+                Log.info("reconcile: sweeping dead orphan \(name)")
+                try? await provider.release(RunningVM(name: name, ip: "", os: .macOS))
+            }
+        }
         slots.removeAll()
         persist()
+    }
+
+    /// Pop one leaf queued for re-adoption in `pool`, if any (a slot claims it to monitor).
+    private func claimAdoptable(pool: String) -> RunningVM? {
+        guard var queue = adoptable[pool], !queue.isEmpty else { return nil }
+        let vm = queue.removeFirst()
+        adoptable[pool] = queue.isEmpty ? nil : queue
+        return vm
+    }
+
+    /// Liveness of a leftover leaf's GitHub runner, resolved via its pool's GitHub config.
+    private func leafLiveness(_ record: RunnerRecord) async -> RunnerLiveness {
+        guard let pool = config.pools.first(where: { $0.name == record.pool }),
+              let gh = config.gitHub(for: pool),
+              let target = try? gh.parsedTarget() else { return .unknown }
+        return await runnerLiveness(name: record.vm.name, github: github(gh.appId), target: target)
+    }
+
+    /// True if any distinct pool target shows a runner named `name` online — so we don't
+    /// sweep a live orphan we can't otherwise map back to a pool.
+    private func anyTargetOnline(name: String) async -> Bool {
+        var seen = Set<String>()
+        for pool in config.pools {
+            guard let gh = config.gitHub(for: pool), let target = try? gh.parsedTarget(),
+                  seen.insert("\(gh.appId)|\(gh.target)").inserted else { continue }
+            if case .online = await runnerLiveness(name: name, github: github(gh.appId), target: target) { return true }
+        }
+        return false
     }
 
     /// Stop every tracked VM — the reliable lever for breaking a slot blocked in
