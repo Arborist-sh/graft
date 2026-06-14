@@ -38,13 +38,15 @@
    - We choose **simplicity over slot-reclamation speed**: the GitHub busy-check / safe-reaper
      (GFT-17) is **demoted to a later optimization**, built only if idle-running-orphan
      slot-clogging ever bites in practice.
-8. **The supervisor never holds a long-lived exec into a leaf.** It injects the JIT config and
-   launches the runner **detached** (a brief exec, proxied through the controller — works
-   cross-host), then monitors the leaf purely by **polling GitHub** (runner online ⇒ keep,
-   offline ⇒ replace). There is no stream to lose, so controller blips and supervisor restarts
-   are near non-events — §3.1's reconcile becomes the *normal* path, not a special recovery one.
-   (Rich live job status returns later as a *voluntary* leaf→controller→supervisor push — never
-   a supervisor→leaf exec.)
+8. **The supervisor never execs into a leaf at all.** It passes the JIT token + runner
+   bootstrap as the leaf's **`StartupScript`** at `orchard create vm` time; the **worker** (local
+   to the VM) delivers and launches it — not the supervisor. The supervisor then monitors purely
+   by **polling GitHub** (runner online ⇒ keep, offline-after-online ⇒ replace, §3.2). No
+   supervisor→guest connection exists at all, so controller blips and supervisor restarts are
+   non-events — §3.1's reconcile is just the *normal* path. (Local-Tart, same-host, uses a local
+   `tart exec` to launch; the GitHub-poll monitoring is identical. The token sits in the VM
+   record briefly — single-use + short-lived, so the exposure window is tiny. Rich live job
+   status returns later as a *voluntary* leaf→controller→supervisor push — never a pull.)
 
 ---
 
@@ -357,6 +359,34 @@ worker's still-running VMs `failed` on recovery — a false positive. Controller
 GitHub says online ⇒ the job is alive ⇒ keep it.
 
 > One model, one truth (GitHub), two entry points (restart, reconnect).
+
+### 3.2 Runner startup grace — "offline" means two things
+
+GitHub shows nothing for a runner until `run.sh` registers it — *after* the VM boots, the worker
+runs the `StartupScript`, and the runner downloads/registers. So a naive "offline ⇒ replace"
+would nuke every leaf mid-boot and churn forever. The rule is **"was-online-then-gone ⇒
+replace"**, never "offline ⇒ replace." Per-leaf, from the supervisor's view:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: orchard create vm (with StartupScript)
+    Created --> Booting: orchard VM pending
+    Booting --> Registering: orchard VM running
+    Booting --> Replace: orchard VM failed, or boot deadline
+    Registering --> Online: runner appears on GitHub
+    Registering --> Replace: registration deadline (never came online)
+    Online --> Online: poll (idle or busy)
+    Online --> Replace: was online, now gone (job done or died)
+    Replace --> [*]: delete leaf, re-acquire
+```
+
+The supervisor watches **two layers**: the **orchard VM status** (pending → running → failed —
+fast-fail on `failed`) and the **GitHub runner** (absent → online → gone, bounded by a
+**registration deadline** ~3–5 min, configurable in the `monitor` block). Per leaf it tracks
+`{ createdAt, sawOnline }`; `sawOnline` is what flips "not on GitHub" from *wait* to *replace*.
+**Reconcile reuses this exactly**: on restart, a leaf whose runner isn't online but is younger
+than the registration deadline (by its persisted `createdAt`) is still booting → wait; older →
+replace. One grace rule for steady-state, startup, *and* recovery.
 
 ---
 
