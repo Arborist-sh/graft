@@ -106,8 +106,14 @@ extension Tree {
         func run() async throws {
             let report = try await Tree.provider(profile: profile).report()
             let paused = report.workers.filter(\.paused).count
+            let stale = report.workers.filter(\.isStale).count
+            let live = report.workers.count - stale
+            var notes: [String] = []
+            if stale > 0 { notes.append("\(stale) stale") }
+            if paused > 0 { notes.append("\(paused) paused") }
+            let branchNotes = notes.isEmpty ? "" : "  (" + notes.joined(separator: ", ") + ")"
             print("trunk:     \(report.controllerURL)")
-            print("branches:  \(report.workers.count)\(paused > 0 ? "  (\(paused) paused)" : "")")
+            print("branches:  \(live)\(stale > 0 ? " live" : "")\(branchNotes)")
             print("capacity:  \(report.totalSlots) slots · \(report.usedVMs) used · \(report.freeSlots) free")
             print("leaves:    \(report.graftVMNames.count)")
         }
