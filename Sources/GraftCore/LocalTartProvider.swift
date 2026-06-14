@@ -11,7 +11,8 @@ public struct LocalTartProvider: VMProvider {
 
     /// Ceiling of VMs of this OS the host can run. macOS is Apple's kernel-enforced
     /// hard limit of 2; Linux is bounded by cores (heuristic, ~half). The supervisor
-    /// enforces desired count against this — the provider just reports the ceiling.
+    /// tracks its own consumption against this ceiling — the provider just reports the
+    /// static limit (it never changes on a single host).
     public func capacity(for os: GuestOS) async -> Int {
         Self.hostCapacity(for: os)
     }

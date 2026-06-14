@@ -50,6 +50,10 @@ struct Run: AsyncParsableCommand {
         // Live spinner dashboard only when we own an interactive terminal; daemon /
         // piped output keeps the plain log stream.
         let dashboard = (!daemon && isatty(STDOUT_FILENO) != 0) ? LiveDashboard() : nil
+        // Seed the live block with the tree's fixed shape — every pool, every desired
+        // slot — so it renders the full canopy from the first frame, even before a leaf
+        // is up (or when the fleet has no capacity at all).
+        dashboard?.configure(pools: cfg.pools.map { .init(name: $0.name, desired: $0.count) })
         dashboard?.start()
         if let dashboard {
             // Quiet by default: only warnings/errors print above the spinner. With
@@ -96,7 +100,7 @@ struct Run: AsyncParsableCommand {
         Log.info("graft starting — \(cfg.pools.count) pool(s), \(scope.rawValue) keychain\(daemon ? ", daemon" : "")")
         let task = Task { await supervisor.run() }
         let monitorTask = startMonitorIfRequested()
-        let sources = installSignalHandlers {
+        let sources = SignalTrap.install {
             Log.info("signal received — shutting down gracefully")
             task.cancel()
             monitorTask?.cancel()
@@ -181,13 +185,3 @@ private func age(_ date: Date) -> String {
     return "\(seconds / 3600)h\((seconds % 3600) / 60)m"
 }
 
-/// Trap SIGINT/SIGTERM and invoke `handler`. Returns the sources to keep alive.
-private func installSignalHandlers(_ handler: @escaping @Sendable () -> Void) -> [DispatchSourceSignal] {
-    [SIGINT, SIGTERM].map { sig in
-        signal(sig, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-        source.setEventHandler(handler: handler)
-        source.resume()
-        return source
-    }
-}

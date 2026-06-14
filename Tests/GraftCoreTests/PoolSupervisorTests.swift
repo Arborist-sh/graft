@@ -56,6 +56,37 @@ private struct MockProvider: VMProvider {
     func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 { 0 }
 }
 
+/// A capacity ceiling a test can change at runtime, to simulate a fleet whose branches
+/// join or leave while the supervisor runs.
+private actor CapacityBox {
+    private var value: Int
+    init(_ v: Int) { value = v }
+    func get() -> Int { value }
+    func set(_ v: Int) { value = v }
+}
+
+/// Like `MockProvider`, but its macOS ceiling is read live from a `CapacityBox` — so a
+/// test can start at 0 (empty fleet) and bump it later (a branch joins).
+private struct ElasticMockProvider: VMProvider {
+    let recorder: Recorder
+    let macCap: CapacityBox
+
+    func capacity(for os: GuestOS) async -> Int { os == .macOS ? await macCap.get() : 0 }
+
+    func acquire(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, startupScript: String?, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {
+        await recorder.acquire(name)
+        return RunningVM(name: name, ip: "10.0.0.2", os: os)
+    }
+    func release(_ vm: RunningVM) async throws {
+        await recorder.releaseBegin(vm.name)
+        await recorder.releaseEnd(vm.name)
+    }
+    func exec(on vm: RunningVM, _ command: [String], timeout: Duration?) async throws -> ShellResult {
+        ShellResult(exitCode: 0, stdout: "", stderr: "")
+    }
+    func execStreaming(on vm: RunningVM, script: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 { 0 }
+}
+
 private struct MockJIT: JITConfigProvider {
     let recorder: Recorder
     func generateJITRunner(github: GitHubConfig, labels: [String], runnerName: String) async throws -> GitHubAppClient.JITRunner {
@@ -86,15 +117,18 @@ struct PoolSupervisorTests {
         FileManager.default.temporaryDirectory.appendingPathComponent("graft-test-" + UUID().uuidString)
     }
 
-    @Test("budgets macOS capacity across pools and fills every slot")
+    @Test("throttles to the capacity ceiling and parks the rest, but spawns every desired slot")
     func capacityBudgetingAndFill() async throws {
         let recorder = Recorder()
         let provider = MockProvider(recorder: recorder, macCapacity: 2)
         let stateDir = tempStateDir()
         defer { try? FileManager.default.removeItem(at: stateDir) }
 
-        // 2 macOS pools each want 2 (host cap 2 → second clamps to 0) + linux wants 3.
-        // Expected slots: 2 + 0 + 3 = 5.
+        // 2 macOS pools each want 2 + linux wants 3 → 7 desired slots all spawn. The macOS
+        // ceiling is 2 (shared across both macOS pools), so 2 of the 4 macOS slots acquire
+        // and 2 park in `waitingForCapacity`; linux (ceiling 4) fills all 3. So: 7 slots
+        // exist, exactly 5 hold a leaf. (Old behavior clamped the *spawn count* to 5 and
+        // mac-b vanished; now capacity is a throttle, not a cap on how many slots exist.)
         let cfg = GraftConfig(pools: [
             PoolConfig(name: "mac-a", image: "i", os: .macOS, count: 2,
                        github: GitHubConfig(appId: 1, target: "org:acme")),
@@ -113,18 +147,21 @@ struct PoolSupervisorTests {
 
         let task = Task { await supervisor.run() }
 
-        // Wait for all 5 slots to acquire (each then blocks).
+        // Wait for the 5 acquirable slots to acquire and all 7 slots to report a phase.
         for _ in 0..<300 {
-            if await recorder.acquired.count >= 5 { break }
+            if await recorder.acquired.count >= 5,
+               (StateManager(directory: stateDir).load()?.slots.count ?? 0) >= 7 { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(await recorder.acquired.count == 5)
 
-        // Per-slot phase is persisted to the state file (what the menu bar reads),
-        // even with no live dashboard.
+        // Per-slot phase is persisted to the state file (what the menu bar reads), even
+        // with no live dashboard: all 7 desired slots are present — 5 with a leaf, 2 parked
+        // waiting for capacity.
         let live = StateManager(directory: stateDir).load()
-        #expect(live?.slots.count == 5)
+        #expect(live?.slots.count == 7)
         #expect(live?.slots.allSatisfy { !$0.phaseLabel.isEmpty } == true)
+        #expect(live?.slots.filter { $0.phaseKind == "waiting" }.count == 2)
 
         // Graceful shutdown releases every VM. The slot's own teardown and the
         // shutdown watcher both target it, so assert coverage (every VM released)…
@@ -146,6 +183,50 @@ struct PoolSupervisorTests {
         // State is cleaned up.
         let persisted = StateManager(directory: stateDir).load()
         #expect(persisted?.runners.isEmpty ?? true)
+    }
+
+    @Test("parks with no capacity, then acquires when a branch joins (elastic)")
+    func elasticPicksUpNewCapacity() async throws {
+        let recorder = Recorder()
+        let cap = CapacityBox(0)                 // fleet starts empty — no branches connected
+        let provider = ElasticMockProvider(recorder: recorder, macCap: cap)
+        let stateDir = tempStateDir()
+        defer { try? FileManager.default.removeItem(at: stateDir) }
+
+        let cfg = GraftConfig(pools: [
+            PoolConfig(name: "mac", image: "i", os: .macOS, count: 1,
+                       github: GitHubConfig(appId: 1, target: "org:acme")),
+        ])
+        // Fast polling so the test doesn't wait the production 10–15s.
+        let supervisor = PoolSupervisor(
+            config: cfg, provider: provider,
+            github: { _ in MockJIT(recorder: recorder) },
+            state: StateManager(directory: stateDir),
+            timing: .init(ceilingRefresh: .milliseconds(20), capacityPoll: .milliseconds(20)))
+        let task = Task { await supervisor.run() }
+
+        // With 0 capacity the slot is spawned but parks — nothing acquired. (Old behavior:
+        // 0 slots spawned, so it could never recover without a restart.)
+        for _ in 0..<200 {
+            if StateManager(directory: stateDir).load()?.slots.first?.phaseKind == "waiting" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await recorder.acquired.isEmpty)
+        #expect(StateManager(directory: stateDir).load()?.slots.first?.phaseKind == "waiting")
+
+        // A branch joins → the ceiling becomes 1. The parked slot picks it up with no restart.
+        await cap.set(1)
+        for _ in 0..<300 {
+            if await recorder.acquired.count >= 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await recorder.acquired.count == 1)
+
+        task.cancel()
+        await task.value
+        let acquired = await recorder.acquired
+        let released = await recorder.released
+        #expect(Set(released) == Set(acquired))
     }
 
     @Test("re-adopts a still-online leaf from a prior run instead of re-acquiring")

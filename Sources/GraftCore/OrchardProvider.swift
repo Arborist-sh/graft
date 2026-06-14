@@ -45,21 +45,19 @@ public struct OrchardProvider: VMProvider {
 
     // MARK: VMProvider
 
-    /// How many more VMs graft should ask for right now. We query the controller for
-    /// the fleet's **live free `tart-vms` slots** (what each worker advertises minus
-    /// what's already placed) and cap that at the configured `maxVMs` ceiling — so
-    /// graft sizes its desired-state to real capacity instead of over-asking and
-    /// churning create→pending→timeout→delete cycles (GFT-12). If the controller is
-    /// unreachable we fall back to the static ceiling, so this is never worse than the
-    /// old behavior.
+    /// The most VMs graft may run on the fleet at once — the *ceiling*, not current free
+    /// slots. We query the controller for the fleet's total `tart-vms` capacity (summed
+    /// across live workers, excluding paused/ghost branches) and cap it at the configured
+    /// `maxVMs`. The supervisor tracks its *own* consumption against this ceiling to decide
+    /// when a slot may acquire, so a ceiling that grows or shrinks as branches join/leave
+    /// makes the pools elastic — no over-asking, no churn (GFT-12), and no restart needed.
+    /// If the controller is unreachable we fall back to the static `maxVMs` ceiling.
     ///
     /// Orchard schedules macOS *and* Linux VMs from the **same** per-host `tart-vms`
-    /// pool, so this returns the shared free-slot count for either `os`. For a
-    /// single-OS fleet (the norm) the planner's per-OS budget is then exact; a mixed
-    /// macOS+Linux fleet could still over-ask, but no worse than the static ceiling did.
+    /// pool, so this returns the shared ceiling for either `os`.
     public func capacity(for os: GuestOS) async -> Int {
         guard let report = try? await report() else { return maxVMs }
-        return min(report.freeSlots, maxVMs)
+        return min(report.totalSlots, maxVMs)
     }
 
     public func acquire(name: String, image: String, os: GuestOS, mounts: [Mount], network: VMNetwork, resources: VMResources, startupScript: String?, onProgress: (@Sendable (AcquireProgress) -> Void)?) async throws -> RunningVM {

@@ -213,21 +213,24 @@ graft run
 
 ## Capacity & scheduling
 
-graft does **not** second-guess placement — the controller schedules across the
-fleet and owns Apple's per-host 2-macOS-VM limit. At planning time graft queries the
-fleet for **live free `tart-vms` slots** (what every schedulable worker advertises
-minus what's already placed cluster-wide) and sizes its ask to that, capped at
-`maxVMs` (default 100). If the controller is unreachable it falls back to the static
-`maxVMs` ceiling. So set your pool `count` to the number of runners you actually want
-and graft fills toward whatever the fleet can actually take.
+graft does **not** second-guess placement — the controller schedules across the fleet
+and owns Apple's per-host 2-macOS-VM limit. Your pool `count` is the **desired** number
+of runners, full stop: graft spawns a slot for each one and keeps it filled.
 
-**If `count` still exceeds the fleet's free slots** (e.g. a mixed macOS+Linux fleet
-sharing one `tart-vms` pool, or capacity that shrinks mid-run), the controller queues
-the excess VMs as `pending`; graft waits up to ~10 min for each, then times out,
-deletes it, and retries. It works — VMs land as workers free up — but **churns** when
-chronically over-subscribed. Live capacity (above) avoids this in the common case;
-size `count` / `maxVMs` to roughly your real fleet capacity (~2 macOS VMs per worker)
-to be safe. `graft tree status` / `branches` show the live free-slot count.
+Capacity is a **throttle**, not a cap on how many slots exist. graft tracks how many
+leaves it's running against the fleet's **ceiling** — the total `tart-vms` capacity the
+live (non-paused, non-ghost) workers advertise, capped at `maxVMs` (default 100) — and
+acquires another leaf only while it's below that ceiling. A slot with no room parks in
+`waiting for capacity` and acquires the moment a slot frees **or a branch joins**. The
+ceiling is re-read continuously, so a fleet that grows or shrinks changes how many slots
+fill **without restarting `tend`**: start against an empty fleet, add branches later, and
+the pools fill on their own. If the controller is unreachable graft falls back to the
+static `maxVMs` ceiling.
+
+Because graft never holds more leaves than the ceiling, it doesn't over-subscribe the
+fleet or churn create→pending→timeout→delete. Set `count` to the runners you want and
+`maxVMs` to your fleet's real capacity (~2 macOS VMs per worker). `graft arborist canopy`
+/ `branches` show the live free-slot count and what each slot is doing.
 
 > **The 2-macOS escape hatch.** Orchard can schedule a macOS image as an `os: linux`
 > VM to dodge the 2-macOS-VM/host cap (the guest still runs macOS; only the

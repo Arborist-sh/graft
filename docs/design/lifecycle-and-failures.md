@@ -4,8 +4,8 @@
 > restart** (what tears down, what persists, what happens when it comes back), every
 > failure ordering, and how "stuck stuff" (deadwood, orphan / failed / pending leaves,
 > ghost workers, zombie runners) is cleaned up **safely**. Marks **current** behavior vs.
-> the **target** ("should"). Drives the backlog: GFT-17 (remediator), GFT-18 (elastic),
-> GFT-20 (deadwood false-positive), GFT-21 (controller lock).
+> the **target** ("should"). Drives the backlog: GFT-17 (remediator), ~~GFT-18 (elastic)~~
+> ✅ done, GFT-20 (deadwood false-positive), ~~GFT-21 (controller lock)~~ ✅ done.
 
 ---
 
@@ -251,11 +251,24 @@ stateDiagram-v2
 
 ### 2.2 Slot (the supervisor's unit of demand — one per desired runner)
 
+**The pool's `count` is the source of truth.** The supervisor spawns one slot task per
+desired runner — *always*, regardless of current capacity. Capacity is a **throttle**, not
+a cap on how many slots exist: a slot reserves a unit of capacity before acquiring, and
+parks in `WaitingForCapacity` until one is free. This is what makes the fleet **elastic**
+(GFT-18) — start `tend` against an empty fleet, add branches later, and the parked slots
+acquire on their own with no restart.
+
+The reservation is **atomic on the supervisor actor** (`held < ceiling`, check-and-reserve
+with no `await` between): N parked slots can't all slip past a single free slot and
+over-acquire. The `ceiling` is re-read from the provider every 15s, so a fleet growing or
+shrinking changes how many slots can hold a leaf live. Re-adopted leaves (§3.1) count
+against `held` on startup, so a slot is budgeted to reclaim each.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> WaitingForCapacity
-    WaitingForCapacity --> WaitingForCapacity: capacity == 0 (park, no churn)
-    WaitingForCapacity --> Acquiring: capacity > 0
+    [*] --> WaitingForCapacity: spawned (one per desired runner)
+    WaitingForCapacity --> WaitingForCapacity: at ceiling (held == ceiling) — park, no churn
+    WaitingForCapacity --> Acquiring: reserved a slot (held less than ceiling)
     Acquiring --> Scheduling: leaf created (Orchard pending)
     Scheduling --> Booting: a branch takes it
     Booting --> Provisioning: leaf ready → register JIT runner
@@ -263,9 +276,9 @@ stateDiagram-v2
     Ready --> Busy: job picked up
     Busy --> Deregistering: job done
     Deregistering --> Stopping: delete leaf
-    Stopping --> WaitingForCapacity: loop (re-check capacity)
-    Acquiring --> Retrying: error
-    Scheduling --> Retrying: timeout
+    Stopping --> WaitingForCapacity: release the slot, loop
+    Acquiring --> Retrying: error (release the slot)
+    Scheduling --> Retrying: timeout (release the slot)
     Retrying --> WaitingForCapacity: backoff
 ```
 
@@ -277,12 +290,20 @@ are drawn there, verified against Orchard source. The stale threshold is **180s*
 
 ### 2.4 Controller (trunk)
 
+**GFT-21 fixed (Aspen):** `plant`/`bonsai` now (a) **refuse cleanly** if a trunk is
+already running on the data dir (`pgrep` → "a trunk is already running (pid N) — kill N"),
+instead of the cryptic Badger lock error, and (b) **trap SIGINT/SIGTERM** and tear the
+controller down, so Ctrl-C can no longer orphan it. The trap is installed *after* the
+controller execs, so it inherits the default SIGTERM disposition (not graft's `SIG_IGN`)
+and stops cleanly.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> AcquiringLock: orchard controller run
+    [*] --> Preflight: graft plant
+    Preflight --> [*]: trunk already running → refuse with PID (GFT-21 fixed)
+    Preflight --> AcquiringLock: orchard controller run
     AcquiringLock --> Running: BadgerDB dir-lock acquired
-    AcquiringLock --> [*]: ⚠ lock held by dying predecessor (GFT-21)
-    Running --> Flushing: SIGINT/SIGTERM
+    Running --> Flushing: Ctrl-C → graft traps it → SIGTERM (GFT-21 fixed)
     Flushing --> [*]: lock released cleanly
     Running --> [*]: hard kill — lock lingers a beat, state crash-safe
 ```
@@ -298,7 +319,8 @@ The part that matters most. For each component: **graceful** (SIGINT), **hard ki
 | | Behavior |
 |---|---|
 | **Graceful** | Flush BadgerDB, release the dir lock. **Persists:** entire registry (workers, VMs, accounts). **Tears down:** nothing — it owns no VMs. Leaves keep running on workers. |
-| **Hard kill** | BadgerDB is crash-safe; lock lingers briefly (**GFT-21** → next plant fails first try). |
+| **Graceful (Ctrl-C)** | graft traps the signal and SIGTERMs the controller → clean BadgerDB flush + lock release (**GFT-21 fixed**: Ctrl-C no longer orphans it). |
+| **Hard kill** | BadgerDB is crash-safe; lock lingers briefly. The next `plant` **detects the orphan and refuses with its PID** rather than colliding on the lock (**GFT-21 fixed**). |
 | **Restart** | Reloads registry → workers reconnect. Marks VMs `Failed` only if a worker stayed offline past 180s (a **false positive** — the VM may still be running; see §3.1). Owns no leaf recovery — the **supervisor** reconciles those (§3.1). |
 
 ### Worker (branch)
@@ -313,7 +335,7 @@ The part that matters most. For each component: **graceful** (SIGINT), **hard ki
 |---|---|
 | **Graceful** | `cleanup()`: deregister runners from GitHub, delete all its leaves, clear state. **Tears down:** every leaf + registration it owns. |
 | **Hard kill** | Leaves + runner registrations **leak**. `~/.graft/state` holds the last snapshot. |
-| **Restart** | `reconcile()` from `~/.graft/state` → **re-adopt leaves whose GitHub runner is online, delete the rest** (§3.1). *Today it blanket-deletes leftovers — the change this work makes.* |
+| **Restart** | `reconcile()` from `~/.graft/state` → **re-adopt leaves whose GitHub runner is online, delete the rest** (§3.1); re-adopted leaves are counted against the capacity ceiling so a slot is budgeted to reclaim each. Then spawns one slot per desired runner, which fill as capacity allows (§2.2). |
 
 ### Leaf (VM)
 Ephemeral by definition. Graceful: destroyed after its one job. On disruption we **replace,
@@ -396,9 +418,9 @@ Every ordering, **now** vs **should**, who **detects**, who **recovers**.
 
 | # | Scenario | What happens **now** | What **should** happen | Detected by | Recovered by |
 |---|---|---|---|---|---|
-| 1 | `graft run` starts, **can't reach controller** | `capacity()` falls back to `maxVMs` (>0) → tries to acquire → fails → retry churn | Park in `WaitingForCapacity`; **don't churn**; reconcile on reach (§3.1) | `controller-unreachable` (critical) | self — park then reconcile (§3.1) |
+| 1 | `graft run` starts with **no branches / can't reach controller** | ✅ **fixed (Aspen):** slots still spawn (one per desired runner) and **park** via reservation — no churn. When branches join, the ceiling refreshes (15s) and parked slots acquire with **no restart** (§2.2, elastic). *(Old: 0 free slots → 0 slots spawned → never recovered without restart.)* | as now | `controller-unreachable` / `capacity-shortfall` | self — park, then acquire on live capacity (§2.2/§3.1) |
 | 2 | **Controller dies** while leaves idle/busy | abandons leaves → `delete` fails → **leaked false deadwood** + parked at 0 capacity | **Hold** leaves; on reconnect reconcile online⇒keep / offline⇒replace (§3.1) | `controller-unreachable` | supervisor hold + reconcile (§3.1) |
-| 3 | **Controller bounce** (down→up) | ghost workers excluded (fixed); abandoned leaves clog slots → park forever | hold leaves; reconcile (§3.1) — kept leaves satisfy `want`, no re-acquire | `capacity-shortfall` (critical) | supervisor reconcile (§3.1) |
+| 3 | **Controller bounce** (down→up) | ghost workers excluded (fixed); leaves held + re-adopted on reconcile; **capacity is re-read live**, so freed slots refill without a restart (§2.2) | hold leaves; reconcile (§3.1) — kept leaves satisfy `want`, no re-acquire | `capacity-shortfall` (critical) | supervisor reconcile (§3.1) |
 | 4 | **Worker dies** | its leaves orphaned; worker is a ghost in the registry until stale | stale-exclude the worker (✅ done); reap its orphaned leaves | stale worker in `tree branches`; `capacity-shortfall` | stale exclusion (done) + remediator |
 | 5 | **Worker degraded** (reconnects but won't boot, `pending` forever) | ⚠ stuck — leaves never boot | **`--tend` agent restarts the worker** → clean slate (§0.7); no graceful-resume attempt | `wedged-slot`, `capacity-shortfall` | `--tend` worker-restart |
 | 6 | **Branch starts on a host with pre-existing deadwood** | stranded `orchard-graft-*` tart VMs sit unused, eating disk/slots | branch agent flags them (✅ built); reap on startup | `host/orphan-leaf` (branch agent) | remediator / `graft leaf rm` |
@@ -513,9 +535,9 @@ sequenceDiagram
 | Item | This doc's section |
 |---|---|
 | **GFT-17** busy-check safe-reaper | **DEMOTED** → later optimization (§0.7); §5 flow, matrix #8 |
-| **GFT-18** elastic supervision | §2.2 slot machine, matrix #1/#4 |
+| **GFT-18** elastic supervision | ✅ **DONE (Aspen):** §2.2 slot machine (spawn-per-desired + reservation throttle + live ceiling refresh), matrix #1/#3 |
 | **GFT-20** deadwood false-positive | §5 in-flight leaf, matrix #9 |
-| **GFT-21** controller lock on Ctrl-C | §2.4, §3 controller |
+| **GFT-21** controller lock on Ctrl-C | ✅ **DONE (Aspen):** §2.4, §3 controller (signal trap + detect-and-refuse) |
 | **NEW**: worker graceful drain | §3 worker "should" |
 | **NEW**: worker reconnect-degraded | matrix #5 |
 | **NEW**: failed-leaf detector | matrix #8, §5 gap |

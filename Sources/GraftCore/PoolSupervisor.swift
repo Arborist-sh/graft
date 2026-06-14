@@ -96,6 +96,30 @@ public actor PoolSupervisor {
     /// can show what each slot is doing — works in daemon mode where there's no
     /// live dashboard.
     private var slots: [String: SlotStatus] = [:]
+    /// Capacity accounting. `ceilingByOS` is the most VMs graft may run per OS (refreshed
+    /// live from the provider, so an Orchard fleet growing/shrinking takes effect without
+    /// a restart). `heldByOS` is how many graft currently has (in-flight + running +
+    /// re-adopted). A slot may acquire only while `held < ceiling`; the check-and-reserve
+    /// is synchronous on the actor, so concurrent parked slots can't over-acquire a fleet
+    /// with fewer free slots than parked slots. This is what makes capacity a *throttle*
+    /// on the pool's desired count rather than a one-time cap on how many slots exist.
+    private var ceilingByOS: [GuestOS: Int] = [:]
+    private var heldByOS: [GuestOS: Int] = [:]
+    private let timing: Timing
+
+    /// Tunable polling cadence. `ceilingRefresh` is how often the per-OS capacity ceiling
+    /// is re-read (so a fleet growing/shrinking takes effect); `capacityPoll` is how often
+    /// a parked, capacity-starved slot retries its reservation. Defaults are the production
+    /// values — injectable so tests don't wait real seconds.
+    public struct Timing: Sendable {
+        public var ceilingRefresh: Duration
+        public var capacityPoll: Duration
+        public init(ceilingRefresh: Duration = .seconds(15), capacityPoll: Duration = .seconds(10)) {
+            self.ceilingRefresh = ceilingRefresh
+            self.capacityPoll = capacityPoll
+        }
+        public static let `default` = Timing()
+    }
 
     /// `github` is a factory keyed by App ID — different pools can use different
     /// GitHub Apps (personal vs. work), each with its own client.
@@ -104,13 +128,15 @@ public actor PoolSupervisor {
         provider: any VMProvider,
         github: @escaping @Sendable (Int) -> any JITConfigProvider,
         state: StateManager = StateManager(),
-        status: RunnerStatusReporter? = nil
+        status: RunnerStatusReporter? = nil,
+        timing: Timing = .default
     ) {
         self.config = config
         self.provider = provider
         self.github = github
         self.state = state
         self.status = status
+        self.timing = timing
     }
 
     /// Convenience for the production path: GitHub App clients backed by `secrets`.
@@ -119,42 +145,49 @@ public actor PoolSupervisor {
         provider: any VMProvider,
         secrets: any SecretStore,
         state: StateManager = StateManager(),
-        status: RunnerStatusReporter? = nil
+        status: RunnerStatusReporter? = nil,
+        timing: Timing = .default
     ) {
         self.init(
             config: config,
             provider: provider,
             github: { appID in GitHubAppClient(appID: appID, secrets: secrets) },
             state: state,
-            status: status
+            status: status,
+            timing: timing
         )
     }
 
     public func run() async {
         await reconcile()
 
+        // Seed the per-OS ceilings before any slot tries to reserve. Re-adopted leaves
+        // already count against `heldByOS` (set in reconcile), so the gate budgets a slot
+        // to reclaim each without double-counting.
+        for os in GuestOS.allCases { ceilingByOS[os] = await provider.capacity(for: os) }
+
         await withTaskGroup(of: Void.self) { group in
-            // Budget capacity per OS across ALL pools (two macOS pools can't each
-            // grab 2 VMs on a 2-VM host). Shared planner keeps this identical to the
-            // target the menu-bar app shows.
-            var capacityByOS: [GuestOS: Int] = [:]
-            for os in GuestOS.allCases { capacityByOS[os] = await provider.capacity(for: os) }
-            // Re-adopted leaves already hold capacity but *are* the desired runners — add them
-            // back so the planner budgets a slot to reclaim each. Without this, a full fleet
-            // (0 free) plans 0 slots and the re-adopted leaves are never monitored or torn down.
-            for (poolName, leaves) in adoptable {
-                if let os = config.pools.first(where: { $0.name == poolName })?.os {
-                    capacityByOS[os, default: 0] += leaves.count
+            // One slot task per *desired* runner — the pool's `count` is the source of
+            // truth. Capacity is a throttle, not a cap on how many slots exist: a slot with
+            // no room parks in `.waitingForCapacity` (via `reserveSlot`) and acquires the
+            // moment a slot frees or a branch joins, instead of never being spawned. This is
+            // what makes the fleet elastic — start `tend` against an empty fleet, add
+            // branches later, and the pools fill with no restart.
+            for pool in config.pools {
+                Log.info("pool '\(pool.name)': \(pool.count) runner slot(s) desired")
+                for slot in 0..<pool.count {
+                    group.addTask { await self.runSlot(pool: pool, index: slot) }
                 }
             }
 
-            for (pool, slots) in config.plannedSlots(capacity: { capacityByOS[$0] ?? 0 }) {
-                if slots < pool.count {
-                    Log.warn("pool '\(pool.name)': clamped \(pool.count) → \(slots) (host \(pool.os.rawValue) capacity)")
-                }
-                Log.info("pool '\(pool.name)': \(slots) runner slot(s)")
-                for slot in 0..<slots {
-                    group.addTask { await self.runSlot(pool: pool, index: slot) }
+            // Keep the ceilings fresh so a fleet that grows or shrinks (Orchard branches
+            // joining/leaving) changes how many slots can hold a leaf — without a restart.
+            let refresh = timing.ceilingRefresh
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: refresh)
+                    if Task.isCancelled { break }
+                    await self.refreshCeilings()
                 }
             }
 
@@ -175,6 +208,28 @@ public actor PoolSupervisor {
         await cleanup()
     }
 
+    private func refreshCeilings() async {
+        for os in GuestOS.allCases { ceilingByOS[os] = await provider.capacity(for: os) }
+    }
+
+    /// Try to claim one unit of capacity for `os`. Pure-synchronous on the actor (no
+    /// `await` between the read and the increment), so the check-and-reserve is atomic:
+    /// concurrent parked slots can't both slip past a single free slot and over-acquire.
+    /// Returns false when graft is already at the ceiling — the caller parks and retries.
+    private func reserveSlot(os: GuestOS) -> Bool {
+        let ceiling = ceilingByOS[os] ?? 0
+        let held = heldByOS[os] ?? 0
+        guard held < ceiling else { return false }
+        heldByOS[os] = held + 1
+        return true
+    }
+
+    /// Return a unit of capacity for `os` once a leaf is torn down (or its adoption ends),
+    /// freeing a parked slot to acquire.
+    private func releaseSlot(os: GuestOS) {
+        heldByOS[os] = max(0, (heldByOS[os] ?? 0) - 1)
+    }
+
     // MARK: One runner slot
 
     private func runSlot(pool: PoolConfig, index: Int) async {
@@ -189,29 +244,36 @@ public actor PoolSupervisor {
         }
 
         while !Task.isCancelled {
+            // Re-adopt a leaf from a prior run before acquiring a fresh one: monitor it to
+            // completion and tear it down, so a supervisor restart doesn't kill a running
+            // job. Re-adopted leaves were already counted against `heldByOS` in reconcile,
+            // so this path doesn't reserve — but it *releases* when the leaf is gone, freeing
+            // the slot to acquire a fresh one next loop.
+            if let adopted = claimAdoptable(pool: pool.name) {
+                Log.info("[\(tag)] re-adopted \(adopted.name) — monitoring to completion")
+                report(.ready, adopted.name)
+                await monitorRunner(tag: tag, pool: pool.name, vm: adopted.name, github: github, target: try? gh.parsedTarget())
+                report(.deregistering, adopted.name)
+                await deregisterByName(adopted.name, poolName: pool.name)
+                report(.stopping, adopted.name)
+                await releaseOnce(adopted)
+                releaseSlot(os: pool.os)
+                continue
+            }
+
+            // Park until graft has capacity for another leaf of this OS. Firing `acquire`
+            // into a full/empty fleet (e.g. every Orchard branch gone) just churns
+            // create→pending→timeout→delete; instead reserve atomically and resume when a
+            // slot frees or a branch joins. Local Tart's ceiling is fixed (never 0), so only
+            // an Orchard fleet actually parks here.
+            guard reserveSlot(os: pool.os) else {
+                report(.waitingForCapacity)
+                try? await Task.sleep(for: timing.capacityPoll)
+                continue
+            }
+
+            // We hold a reservation now — every exit from here must `releaseSlot`.
             do {
-                // Re-adopt a leaf from a prior run before acquiring a fresh one: monitor it to
-                // completion and tear it down, so a supervisor restart doesn't kill a running
-                // job (and the re-adopted leaf counts toward the pool's desired count).
-                if let adopted = claimAdoptable(pool: pool.name) {
-                    Log.info("[\(tag)] re-adopted \(adopted.name) — monitoring to completion")
-                    report(.ready, adopted.name)
-                    await monitorRunner(tag: tag, pool: pool.name, vm: adopted.name, github: github, target: try? gh.parsedTarget())
-                    report(.deregistering, adopted.name)
-                    await deregisterByName(adopted.name, poolName: pool.name)
-                    report(.stopping, adopted.name)
-                    await releaseOnce(adopted)
-                    continue
-                }
-                // Park until the fleet has room. Firing `acquire` into a 0-capacity fleet
-                // (e.g. every Orchard worker gone) just churns create→pending→timeout→delete;
-                // instead wait and resume when capacity returns. Local Tart's capacity is its
-                // fixed host ceiling (never 0), so only an Orchard fleet actually parks here.
-                while !Task.isCancelled, await provider.capacity(for: pool.os) <= 0 {
-                    report(.waitingForCapacity)
-                    try await Task.sleep(for: .seconds(15))
-                }
-                if Task.isCancelled { break }
                 let name = makeGraftVMName()
                 report(.acquiring, name)
                 // Surface the leaf's real lifecycle: scheduling (waiting for a branch) vs booting.
@@ -248,7 +310,9 @@ public actor PoolSupervisor {
                 }
                 report(.stopping, vm.name)
                 await releaseOnce(vm)
+                releaseSlot(os: pool.os)
             } catch {
+                releaseSlot(os: pool.os)
                 if Task.isCancelled { break }
                 report(.retrying)
                 Log.warn("[\(tag)] slot error: \(error) — retrying in 5s")
@@ -434,6 +498,11 @@ public actor PoolSupervisor {
                 Log.info("reconcile: re-adopting live leaf \(record.vm.name)")
                 runners[record.vm.name] = record
                 adoptable[record.pool, default: []].append(record.vm)
+                // It already consumes a slot on the fleet — count it so the gate budgets a
+                // slot to reclaim it (and doesn't hand that capacity to a fresh acquire too).
+                if let os = config.pools.first(where: { $0.name == record.pool })?.os {
+                    heldByOS[os, default: 0] += 1
+                }
             }
         }
         // Crash-before-persist orphans: sweep graft VMs we aren't tracking — but never one

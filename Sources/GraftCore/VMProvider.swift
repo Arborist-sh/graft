@@ -30,8 +30,12 @@ public enum AcquireProgress: Sendable {
 /// always goes through a provider. This is what makes Orchard (multi-host) or a
 /// future native backend (Twig) a drop-in swap rather than a rewrite.
 public protocol VMProvider: Sendable {
-    /// How many more VMs of this OS this provider can currently hand out.
-    /// For local Tart + macOS this is Apple's hard 2-VM ceiling minus what's running.
+    /// The *ceiling* — the most VMs of this OS graft may run at once on this backend.
+    /// For local Tart + macOS this is Apple's hard 2-VM limit; for Orchard it's the
+    /// fleet's total capacity (capped at `maxVMs`), which moves as branches join/leave.
+    /// This is a ceiling, not current free slots: the supervisor tracks its own
+    /// consumption against it, so capacity is a throttle on the desired count rather
+    /// than a cap on how many slots exist.
     func capacity(for os: GuestOS) async -> Int
 
     /// Clone + boot a VM named `name` from `image`, wait for it to get an IP, and return it.

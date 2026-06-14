@@ -176,6 +176,30 @@ extension Tree {
 // MARK: - graft tree plant / branch / prune  (trunk + branch lifecycle)
 
 extension Tree {
+    /// PID of an `orchard controller` already running on `dataDir`, if any — an orphan from
+    /// a prior `plant`/`bonsai` whose Ctrl-C didn't reach it (GFT-21). Lets us refuse with a
+    /// clear message instead of the cryptic Badger "cannot acquire directory lock" error.
+    static func runningControllerPID(dataDir: String) async -> Int32? {
+        guard let r = try? await Shell.run("pgrep", ["-f", "orchard controller.*--data-dir \(dataDir)"]),
+              r.succeeded else { return nil }
+        return r.stdoutTrimmed.split(whereSeparator: \.isNewline).first.flatMap { Int32($0) }
+    }
+
+    /// Stop a local orchard worker by its `--name`. The bonsai branch worker is spawned
+    /// after the signal trap is installed, so it inherits our `SIG_IGN` and can ignore a
+    /// polite SIGTERM — escalate to SIGKILL so the bonsai always tears down cleanly.
+    static func killWorker(name: String) async {
+        _ = try? await Shell.run("pkill", ["-TERM", "-f", "orchard worker run.*--name \(name)"])
+        try? await Task.sleep(for: .milliseconds(500))
+        _ = try? await Shell.run("pkill", ["-KILL", "-f", "orchard worker run.*--name \(name)"])
+    }
+
+    /// Error for "a trunk is already running here" — names the PID and how to clear it.
+    static func trunkAlreadyRunning(pid: Int32) -> GraftError {
+        GraftError("a trunk is already running here (pid \(pid)) — it holds the controller's database lock.\n" +
+            "    Reuse it, or stop it first:  kill \(pid)   (or: pkill -f 'orchard controller')")
+    }
+
     /// Run the controller in the foreground, echoing its logs (optionally prefixed) and
     /// capturing the one-time bootstrap-admin token so `branch`/`prune` can authenticate.
     /// Shared by `plant` and `bonsai`.
@@ -209,6 +233,11 @@ extension Tree {
 
         func run() async throws {
             try await Tree.requireOrchard()
+            // Refuse cleanly if a trunk is already running here (GFT-21) — otherwise the
+            // controller collides on the Badger DB lock with an inscrutable error.
+            if let pid = await Tree.runningControllerPID(dataDir: dataDir) {
+                throw Tree.trunkAlreadyRunning(pid: pid)
+            }
             try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
             // Optional controller-host monitor: disk/memory + is the controller answering?
@@ -223,8 +252,22 @@ extension Tree {
             printErr(ANSI.green("🕳  digging a hole…"))
             printErr(ANSI.green("🌱  planting the trunk…") + ANSI.dim("   (Ctrl-C to stop)"))
             printErr(ANSI.dim("    data: \(dataDir)\n"))
-            let code = try await Tree.runController(dataDir: dataDir)
-            if code != 0 { throw ExitCode(code) }
+
+            // Run the controller in its own task; trap Ctrl-C to tear it down so it can't be
+            // orphaned (GFT-21). Install the trap *after* the controller has exec'd, so it
+            // inherits the default SIGTERM disposition (not our SIG_IGN) and stops cleanly.
+            let controller = Task { try await Tree.runController(dataDir: dataDir) }
+            try? await Task.sleep(for: .milliseconds(250))
+            let stopped = AtomicFlag()
+            let sources = SignalTrap.install {
+                printErr("\n" + ANSI.green("🪓  uprooting the trunk…"))
+                stopped.set()
+                controller.cancel()
+            }
+            defer { sources.forEach { $0.cancel() } }
+
+            let code = try await controller.value
+            if code != 0 && !stopped.isSet { throw ExitCode(code) }
         }
     }
 
@@ -242,6 +285,10 @@ extension Tree {
 
         func run() async throws {
             try await Tree.requireOrchard()
+            // Refuse cleanly if a trunk is already running here (GFT-21).
+            if let pid = await Tree.runningControllerPID(dataDir: dataDir) {
+                throw Tree.trunkAlreadyRunning(pid: pid)
+            }
             try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
             printErr(ANSI.green("🪴  potting a bonsai — a local trunk + branch…") + ANSI.dim("   (Ctrl-C to stop)\n"))
@@ -269,9 +316,25 @@ extension Tree {
             defer { branch.cancel() }
 
             printErr(ANSI.green("🕳  digging a hole… 🌱 planting the trunk…\n"))
-            let code = try await Tree.runController(dataDir: dataDir, prefix: "[trunk] ")
+
+            // Run the controller in its own task and trap Ctrl-C to tear the whole bonsai
+            // down — neither the trunk nor the branch should be left orphaned (GFT-21).
+            let controller = Task { try await Tree.runController(dataDir: dataDir, prefix: "[trunk] ") }
+            try? await Task.sleep(for: .milliseconds(250))
+            let stopped = AtomicFlag()
+            let sources = SignalTrap.install {
+                printErr("\n" + ANSI.green("🪓  uprooting the bonsai…"))
+                stopped.set()
+                controller.cancel()
+                branch.cancel()
+            }
+            defer { sources.forEach { $0.cancel() } }
+
+            let code = try await controller.value
             branch.cancel()
-            if code != 0 { throw ExitCode(code) }
+            // The branch worker spawned after the trap → may ignore SIGTERM; force it down.
+            await Tree.killWorker(name: "bonsai")
+            if code != 0 && !stopped.isSet { throw ExitCode(code) }
         }
     }
 
