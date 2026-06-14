@@ -213,7 +213,7 @@ extension Tree {
 
     /// On a *deliberate* branch drop (Ctrl-C), proactively deregister the worker from the
     /// trunk so the tree reflects the loss **immediately** — instead of the controller waiting
-    /// out the ~120–180s heartbeat-stale window before it stops counting the dead branch's
+    /// out the 180s heartbeat-stale window before it stops counting the dead branch's
     /// slots (we know this isn't a blip). Best-effort: needs the admin token (present when this
     /// host can authenticate as admin, e.g. the trunk host); otherwise we fall back to the
     /// stale window. Stop the worker process *before* calling this so it can't re-register.

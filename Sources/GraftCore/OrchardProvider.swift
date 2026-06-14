@@ -171,9 +171,10 @@ public struct OrchardProvider: VMProvider {
 
         /// A worker not seen within this window is a ghost — dead, but not yet reaped by the
         /// controller (which keeps counting its slots until heartbeat timeout). Excluding it
-        /// keeps a killed worker from inflating capacity. Comfortably above any sane heartbeat
-        /// interval, so a live worker is never false-flagged.
-        public static let staleThreshold: TimeInterval = 120
+        /// keeps a killed worker from inflating capacity. Set to Orchard's own
+        /// `workerOfflineTimeout` (180s) so graft and the controller agree on "offline" — and
+        /// well above the 15s heartbeat, so a live worker is never false-flagged.
+        public static let staleThreshold: TimeInterval = 180
         public var isStale: Bool { (lastSeenAge ?? 0) > Self.staleThreshold }
     }
 

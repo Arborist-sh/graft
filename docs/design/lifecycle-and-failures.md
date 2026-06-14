@@ -208,8 +208,7 @@ stateDiagram-v2
 
 ### 1.5.5 Design implications
 
-- **`staleThreshold` 120s → 180s.** Today we flag a worker stale 60s *before* the controller
-  does — align to `workerOfflineTimeout`.
+- **`staleThreshold` = 180s ✅ (done).** Matches the controller's `workerOfflineTimeout`, so graft and Orchard agree on "offline." (Was 120s — which flagged a worker stale 60s *before* the controller did.)
 - **Don't duplicate Orchard.** `syncOnDiskVMs` already does the startup orphan-sweep. The
   `tree branch --tend` agent's real scope is what Orchard *doesn't* do: host vitals, alerting,
   **process-level worker restart** (the one thing Orchard can't do to itself), and feeding the
@@ -326,7 +325,7 @@ The part that matters most. For each component: **graceful** (SIGINT), **hard ki
 ### Worker (branch)
 | | Behavior — **current** | **Should** |
 |---|---|---|
-| **Graceful** | The `orchard worker` process leaves its tart VMs running. ✅ **but `graft tree branch` now cleans up on Ctrl-C (Aspen+):** traps the signal → SIGTERMs the worker → **deregisters the branch from the trunk** (`orchard delete worker` — frees its slots *immediately* instead of waiting out the ~120–180s heartbeat-stale window; best-effort, needs the admin token) → **sweeps the `orchard-graft-*` leaves** it booted. So a drop no longer strands VMs *or* leaves phantom capacity. Aborts this host's in-flight jobs (accepted worker-bounce trade-off, §0.7). | **Drain**: stop taking new leaves, let in-flight jobs *finish*, then destroy its leaves and exit (a `--drain` flag — see §8). |
+| **Graceful** | The `orchard worker` process leaves its tart VMs running. ✅ **but `graft tree branch` now cleans up on Ctrl-C (Aspen+):** traps the signal → SIGTERMs the worker → **deregisters the branch from the trunk** (`orchard delete worker` — frees its slots *immediately* instead of waiting out the 180s heartbeat-stale window; best-effort, needs the admin token) → **sweeps the `orchard-graft-*` leaves** it booted. So a drop no longer strands VMs *or* leaves phantom capacity. Aborts this host's in-flight jobs (accepted worker-bounce trade-off, §0.7). | **Drain**: stop taking new leaves, let in-flight jobs *finish*, then destroy its leaves and exit (a `--drain` flag — see §8). |
 | **Hard kill** | tart VMs persist on disk (stranded); controller shows worker as ghost until stale | branch agent (`tree branch --tend`) flags stranded `orchard-graft-*` VMs (built); remediator reaps them |
 | **Restart** | Re-registers; does **not** reclaim its old stranded VMs | Re-register **and** reconcile local tart VMs against the controller — destroy any the controller doesn't know about |
 
@@ -543,7 +542,7 @@ sequenceDiagram
 | **NEW**: worker graceful *drain* (wait for jobs) | §3 worker "should" — `--drain` flag, future (Ctrl-C currently aborts in-flight jobs per §0.7) |
 | **NEW**: worker reconnect-degraded | matrix #5 |
 | **NEW**: failed-leaf detector | matrix #8, §5 gap |
-| **NEW**: staleThreshold 120s → 180s | §1.5.5 (match `workerOfflineTimeout`) |
+| **NEW**: staleThreshold 120s → 180s | ✅ **DONE:** now 180s = `workerOfflineTimeout` (§1.5.5) |
 | **NEW**: Linux guests (future epic) | 📋 unproven — plumbing is OS-aware (runner arch, capacity, Orchard `--os linux`) but local `tart exec` is macOS-guest only, runner deps (`installdependencies.sh`) + run-as-root aren't handled, and the image builder is macOS-only. **macOS is the supported target.** |
 
 ---
