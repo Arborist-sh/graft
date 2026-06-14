@@ -137,6 +137,14 @@ public actor PoolSupervisor {
             // target the menu-bar app shows.
             var capacityByOS: [GuestOS: Int] = [:]
             for os in GuestOS.allCases { capacityByOS[os] = await provider.capacity(for: os) }
+            // Re-adopted leaves already hold capacity but *are* the desired runners — add them
+            // back so the planner budgets a slot to reclaim each. Without this, a full fleet
+            // (0 free) plans 0 slots and the re-adopted leaves are never monitored or torn down.
+            for (poolName, leaves) in adoptable {
+                if let os = config.pools.first(where: { $0.name == poolName })?.os {
+                    capacityByOS[os, default: 0] += leaves.count
+                }
+            }
 
             for (pool, slots) in config.plannedSlots(capacity: { capacityByOS[$0] ?? 0 }) {
                 if slots < pool.count {
