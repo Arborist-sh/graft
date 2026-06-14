@@ -5,7 +5,7 @@
 > failure ordering, and how "stuck stuff" (deadwood, orphan / failed / pending leaves,
 > ghost workers, zombie runners) is cleaned up **safely**. Marks **current** behavior vs.
 > the **target** ("should"). Drives the backlog: GFT-17 (remediator), ~~GFT-18 (elastic)~~
-> ✅ done, GFT-20 (deadwood false-positive), ~~GFT-21 (controller lock)~~ ✅ done.
+> ✅ done, ~~GFT-20 (deadwood false-positive)~~ ✅ done, ~~GFT-21 (controller lock)~~ ✅ done.
 
 ---
 
@@ -426,7 +426,7 @@ Every ordering, **now** vs **should**, who **detects**, who **recovers**.
 | 6 | **Branch starts on a host with pre-existing deadwood** | stranded `orchard-graft-*` tart VMs sit unused, eating disk/slots | branch agent flags them (✅ built); reap on startup | `host/orphan-leaf` (branch agent) | remediator / `graft leaf rm` |
 | 7 | **Supervisor (`graft run`) dies** | on restart `reconcile()` blanket-**deletes** leftover leaves (aborts running jobs) | reconcile from state (§3.1): re-adopt online leaves, replace dead | `deadwood`, `offline-runner` | `reconcile()` (§3.1) |
 | 8 | **Failed leaf clogs a slot** | capacity stuck at 0; manual `orchard delete vm` needed | reap `Failed` leaves on the park-gate — **but never if the runner is still busy** | (gap — `failed`+owned trips nothing) | remediator (safe reaper) |
-| 9 | **Leaf stuck `pending`** (never boots) | flagged `wedged-slot` ✅ **and** falsely `orphan-vm` ❌ (GFT-20) | flag `wedged-slot` only; after a timeout, delete & re-acquire | `wedged-slot` (correct) | supervisor retry / remediator |
+| 9 | **Leaf stuck `pending`** (never boots) | flagged `wedged-slot` ✅; **GFT-20 fixed (Aspen):** no longer falsely `orphan-vm` — ownership = `runners ∪ slots[].vmName`, so an in-flight/booting leaf is owned, not deadwood | flag `wedged-slot` only; after a timeout, delete & re-acquire | `wedged-slot` (correct) | supervisor retry / remediator |
 | 10 | **Zombie runner** on GitHub (registered, offline) | flagged (excludes owned, ✅) | deregister it | `offline-runner` | `graft runners prune` / remediator |
 
 ---
@@ -444,7 +444,7 @@ reap** — the most important column, because reaping the wrong thing kills live
 | **Pending-stuck leaf** | created, never booted | supervisor | `wedged-slot` ✅ | past acquire timeout (the slot deletes + retries) | supervisor |
 | **Ghost worker** | listed, not heartbeating | controller | stale in `tree branches` ✅ | last-seen > threshold → excluded from capacity (✅), prune optional | stale exclusion |
 | **Zombie runner** | GitHub runner registered+offline | GitHub | `offline-runner` ✅ | offline **and** not owned by a live slot (✅) | `runners prune` |
-| **In-flight leaf** | a leaf a slot is acquiring | supervisor | — | **NEVER reap** (GFT-20: track it the moment it's created) | — |
+| **In-flight leaf** | a leaf a slot is acquiring | supervisor | — | **NEVER reap** — ✅ **GFT-20 fixed (Aspen):** owned via `slots[].vmName` from the `.acquiring` phase (persisted before `acquire`), so detectors don't flag it | — |
 
 **The reap decision (this is the whole safety model):**
 
@@ -536,7 +536,7 @@ sequenceDiagram
 |---|---|
 | **GFT-17** busy-check safe-reaper | **DEMOTED** → later optimization (§0.7); §5 flow, matrix #8 |
 | **GFT-18** elastic supervision | ✅ **DONE (Aspen):** §2.2 slot machine (spawn-per-desired + reservation throttle + live ceiling refresh), matrix #1/#3 |
-| **GFT-20** deadwood false-positive | §5 in-flight leaf, matrix #9 |
+| **GFT-20** deadwood false-positive | ✅ **DONE (Aspen):** ownership = `runners ∪ slots[].vmName` (`PoolState.ownedVMNames`); §5 in-flight leaf, matrix #9 |
 | **GFT-21** controller lock on Ctrl-C | ✅ **DONE (Aspen):** §2.4, §3 controller (signal trap + detect-and-refuse) |
 | **NEW**: worker graceful drain | §3 worker "should" |
 | **NEW**: worker reconnect-degraded | matrix #5 |

@@ -55,6 +55,15 @@ public struct PoolState: Codable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    /// VM names the supervisor currently owns: tracked runner records UNION the in-flight
+    /// leaves that have a slot phase but no runner record yet. A leaf mid-`acquire` is already
+    /// created on the backend (its name is in `slots[].vmName` from the `.acquiring` phase) but
+    /// isn't `track()`-ed until acquire returns — so keying ownership off `runners` alone
+    /// false-flags it as leaked deadwood / a zombie runner. The union closes that window (GFT-20).
+    public var ownedVMNames: Set<String> {
+        Set(runners.map(\.vm.name)).union(slots.compactMap(\.vmName))
+    }
+
     // Tolerate older state files (and forward-compat) by defaulting any missing key.
     enum CodingKeys: String, CodingKey { case runners, slots, updatedAt }
     public init(from decoder: Decoder) throws {

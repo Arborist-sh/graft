@@ -124,11 +124,14 @@ public enum HealthMonitorFactory {
             return try await client.listRunners(target: target)
         }
 
-        // The supervisor's currently-owned runners (tracked VM names == runner names), so
-        // RunnerDetector never flags a live runner that's briefly offline right after it
-        // registers. Empty off-trunk (no local state) — nothing owned, nothing to skip.
+        // The supervisor's currently-owned leaves: tracked runner records UNION the in-flight
+        // leaves that have a slot phase but no runner record yet. A leaf mid-`acquire` is
+        // already created on the backend (its name is in `slots[].vmName` from the .acquiring
+        // phase) but isn't `track()`-ed until acquire returns — so keying only off `runners`
+        // false-flags it as a leaked-deadwood orphan (and a still-booting runner as a zombie).
+        // Unioning the slot VM names closes that window (GFT-20). Empty off-trunk (no state).
         let state = StateManager()
-        let ownedRunners: @Sendable () -> Set<String> = { Set((state.load()?.runners ?? []).map(\.vm.name)) }
+        let ownedVMNames: @Sendable () -> Set<String> = { state.load()?.ownedVMNames ?? [] }
 
         var desiredByOS: [GuestOS: Int] = [:]
         for pool in config.pools { desiredByOS[pool.os, default: 0] += pool.count }
@@ -156,7 +159,7 @@ public enum HealthMonitorFactory {
         // Network/controller-backed detectors work from anywhere with creds.
         var detectors: [any HealthDetector] = [
             AuthDetector(probes: authProbes),
-            RunnerDetector(scopes: runnerScopes, owned: ownedRunners, list: runnerList),
+            RunnerDetector(scopes: runnerScopes, owned: ownedVMNames, list: runnerList),
             CapacityDetector(desiredByOS: desiredByOS, capacity: capacity, fleet: fleet),
         ]
         if let controllerDetector { detectors.append(controllerDetector) }
@@ -173,7 +176,7 @@ public enum HealthMonitorFactory {
                 transientKinds: transientPhases, stuckTimeout: stuckTimeout, now: now))
             detectors.append(DeadwoodDetector(
                 managedVMNames: { await provider.managedVMNames() },
-                trackedVMNames: { Set((state.load()?.runners ?? []).map(\.vm.name)) }))
+                trackedVMNames: ownedVMNames))
         }
         return detectors
     }
