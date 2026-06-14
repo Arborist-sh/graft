@@ -53,12 +53,12 @@ extension Image {
     struct Render: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Print the provisioning script a recipe compiles to (no build).")
 
-        @Option(name: .shortAndLong, help: "Recipe file (.graft / .yml / .json).")
-        var file: String
+        @Option(name: .shortAndLong, help: "Seed file (.graft / .yml / .json).")
+        var seed: String
 
         func run() throws {
-            let recipe = try ImageRecipe.load(from: file)
-            let scriptBody = try recipeScriptBody(recipe, recipeFile: file)
+            let recipe = try ImageRecipe.load(from: seed)
+            let scriptBody = try recipeScriptBody(recipe, recipeFile: seed)
             print("# image '\(recipe.name)' from \(recipe.from)")
             print(recipe.provisioning(scriptBody: scriptBody) ?? "# (nothing to provision)")
         }
