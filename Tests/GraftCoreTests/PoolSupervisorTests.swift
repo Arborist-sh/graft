@@ -27,6 +27,9 @@ private actor Recorder {
 
     private(set) var deregisteredRunnerIDs: [Int] = []
     func deregister(_ id: Int) { deregisteredRunnerIDs.append(id) }
+
+    private(set) var minted: [String] = []
+    func mint(_ name: String) { minted.append(name) }
 }
 
 private struct MockProvider: VMProvider {
@@ -56,8 +59,9 @@ private struct MockProvider: VMProvider {
 private struct MockJIT: JITConfigProvider {
     let recorder: Recorder
     func generateJITRunner(github: GitHubConfig, labels: [String], runnerName: String) async throws -> GitHubAppClient.JITRunner {
+        await recorder.mint(runnerName)
         // Stable per-name id so the deregister assertion is deterministic.
-        GitHubAppClient.JITRunner(runnerID: abs(runnerName.hashValue % 1_000_000), encodedConfig: "jit-\(runnerName)")
+        return GitHubAppClient.JITRunner(runnerID: abs(runnerName.hashValue % 1_000_000), encodedConfig: "jit-\(runnerName)")
     }
     func deleteRunner(id: Int, target: GitHubTarget) async throws {
         // Simulate a cancellation-aware network call (URLSession throws when its task
@@ -66,14 +70,10 @@ private struct MockJIT: JITConfigProvider {
         try Task.checkCancellation()
         await recorder.deregister(id)
     }
-}
-
-/// Holds the VM (one job in flight) until the slot is cancelled, so each slot
-/// acquires exactly one VM — making counts deterministic.
-private struct BlockingRunner: RunnerRunner {
-    func runEphemeralRunner(on vm: RunningVM, jitConfig: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32 {
-        while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
-        return 0
+    /// Every minted runner reads as online — so each slot sees its runner come up and then
+    /// holds (polling) until shutdown, mirroring the old BlockingRunner.
+    func listRunners(target: GitHubTarget) async throws -> [GitHubAppClient.Runner] {
+        (await recorder.minted).map { GitHubAppClient.Runner(id: 0, name: $0, status: "online") }
     }
 }
 
@@ -107,7 +107,6 @@ struct PoolSupervisorTests {
             config: cfg,
             provider: provider,
             github: { _ in MockJIT(recorder: recorder) },
-            runner: BlockingRunner(),
             state: StateManager(directory: stateDir)
         )
 

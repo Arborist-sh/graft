@@ -48,8 +48,10 @@ public struct LocalTartProvider: VMProvider {
             if let startupScript {
                 try await waitForGuest(vm)
                 let b64 = Data(startupScript.utf8).base64EncodedString()
-                let launch = "echo \(b64) | base64 -d > /tmp/graft-startup.sh; setsid nohup bash /tmp/graft-startup.sh >/tmp/graft-runner.log 2>&1 </dev/null & echo graft-launched"
-                _ = try await exec(on: vm, ["bash", "-lc", launch], timeout: .seconds(60))
+                // The script self-detaches the runner (nohup … & disown), so just run it —
+                // it returns once the runner is backgrounded, leaving it alive in the guest.
+                let launch = "echo \(b64) | base64 -d > /tmp/graft-startup.sh && bash /tmp/graft-startup.sh"
+                _ = try await exec(on: vm, ["bash", "-lc", launch], timeout: .seconds(120))
             }
             return vm
         } catch {

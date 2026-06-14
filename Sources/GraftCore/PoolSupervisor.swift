@@ -5,16 +5,13 @@ import Foundation
 public protocol JITConfigProvider: Sendable {
     func generateJITRunner(github: GitHubConfig, labels: [String], runnerName: String) async throws -> GitHubAppClient.JITRunner
     func deleteRunner(id: Int, target: GitHubTarget) async throws
-}
-
-/// Runs the ephemeral runner in a VM and returns its exit code.
-/// `RunnerProvisioner` is the production conformer.
-public protocol RunnerRunner: Sendable {
-    func runEphemeralRunner(on vm: RunningVM, jitConfig: String, onLine: (@Sendable (String) -> Void)?) async throws -> Int32
+    /// Runners registered on `target` — the supervisor polls this to watch each leaf's
+    /// runner come online and then finish. This is how it monitors a leaf without ever
+    /// exec-ing into the guest.
+    func listRunners(target: GitHubTarget) async throws -> [GitHubAppClient.Runner]
 }
 
 extension GitHubAppClient: JITConfigProvider {}
-extension RunnerProvisioner: RunnerRunner {}
 
 /// What a runner slot is currently doing — surfaced to an optional status reporter
 /// so a live UI (the `graft run` spinner dashboard) can show per-slot progress.
@@ -83,7 +80,6 @@ public actor PoolSupervisor {
     private let config: GraftConfig
     private let provider: any VMProvider
     private let github: @Sendable (Int) -> any JITConfigProvider
-    private let runner: any RunnerRunner
     private let state: StateManager
     private let status: RunnerStatusReporter?
     private var runners: [String: RunnerRecord] = [:]
@@ -102,20 +98,17 @@ public actor PoolSupervisor {
         config: GraftConfig,
         provider: any VMProvider,
         github: @escaping @Sendable (Int) -> any JITConfigProvider,
-        runner: any RunnerRunner,
         state: StateManager = StateManager(),
         status: RunnerStatusReporter? = nil
     ) {
         self.config = config
         self.provider = provider
         self.github = github
-        self.runner = runner
         self.state = state
         self.status = status
     }
 
-    /// Convenience for the production path: GitHub App clients backed by `secrets`,
-    /// runner via the provider's exec channel.
+    /// Convenience for the production path: GitHub App clients backed by `secrets`.
     public init(
         config: GraftConfig,
         provider: any VMProvider,
@@ -127,7 +120,6 @@ public actor PoolSupervisor {
             config: config,
             provider: provider,
             github: { appID in GitHubAppClient(appID: appID, secrets: secrets) },
-            runner: RunnerProvisioner(provider: provider),
             state: state,
             status: status
         )
@@ -194,7 +186,8 @@ public actor PoolSupervisor {
                     try await Task.sleep(for: .seconds(15))
                 }
                 if Task.isCancelled { break }
-                report(.acquiring)
+                let name = makeGraftVMName()
+                report(.acquiring, name)
                 // Surface the leaf's real lifecycle: scheduling (waiting for a branch) vs booting.
                 let onProgress: @Sendable (AcquireProgress) -> Void = { progress in
                     let phase: RunnerPhase
@@ -202,48 +195,87 @@ public actor PoolSupervisor {
                     case .scheduling: phase = .scheduling
                     case .booting: phase = .booting
                     }
-                    Task { await self.recordPhase(tag: tag, pool: pool.name, vm: nil, phase: phase) }
+                    Task { await self.recordPhase(tag: tag, pool: pool.name, vm: name, phase: phase) }
                 }
-                let vm = try await provider.acquire(name: makeGraftVMName(), image: pool.image, os: pool.os, mounts: pool.mounts ?? [], network: pool.network ?? .nat, resources: pool.resources, startupScript: nil, onProgress: onProgress)
+                // Mint the JIT runner FIRST: its config is embedded in the leaf's startup
+                // script, which the worker (Orchard) or local tart runs on boot. The
+                // supervisor never execs into the guest — it watches the runner on GitHub.
+                report(.provisioning, name)
+                let jit = try await github.generateJITRunner(github: gh, labels: pool.resolvedLabels(), runnerName: name)
+                let script = RunnerProvisioner.provisionScript(os: pool.os, jitConfig: jit.encodedConfig)
+
+                let vm = try await provider.acquire(name: name, image: pool.image, os: pool.os, mounts: pool.mounts ?? [], network: pool.network ?? .nat, resources: pool.resources, startupScript: script, onProgress: onProgress)
                 track(vm, pool: pool.name)
                 Log.info("[\(tag)] acquired \(vm.name) (\(vm.ip))")
 
-                var runnerID: Int?
-                do {
-                    report(.provisioning, vm.name)
-                    let jit = try await github.generateJITRunner(github: gh, labels: pool.resolvedLabels(), runnerName: vm.name)
-                    runnerID = jit.runnerID
-                    report(.starting, vm.name)
-                    let onLine = makeRunnerLineHandler(tag: tag, pool: pool.name, vm: vm.name)
-                    let exitCode = try await runner.runEphemeralRunner(on: vm, jitConfig: jit.encodedConfig, onLine: onLine)
-                    Log.info("[\(tag)] runner \(vm.name) finished (exit \(exitCode))")
-                } catch is CancellationError {
-                    Log.info("[\(tag)] runner \(vm.name) stopped (shutdown)")
-                } catch {
-                    Log.warn("[\(tag)] runner \(vm.name) failed: \(error)")
-                }
+                // Watch the runner on GitHub until its single job finishes (or it never
+                // registers within the grace window). No exec, no held stream.
+                await monitorRunner(tag: tag, pool: pool.name, vm: vm.name, github: github, target: try? gh.parsedTarget())
 
-                // Deregister from GitHub so a runner that never ran a job (e.g. killed
-                // on shutdown) doesn't linger as an offline husk. A completed job is
-                // already gone — deleteRunner 404s, which we ignore. Must survive the
-                // slot's own cancellation: on graceful shutdown the task is already
-                // cancelled here, so a plain `await` would be aborted and leak the
-                // runner — exactly the case this cleans up.
-                if let runnerID, let target = try? gh.parsedTarget() {
+                // Deregister so a runner that never ran (e.g. killed on shutdown) doesn't
+                // linger as an offline husk; a completed ephemeral runner is already gone
+                // (deleteRunner 404s, ignored). Shielded so it survives the slot's own
+                // cancellation on graceful shutdown.
+                if let target = try? gh.parsedTarget() {
                     report(.deregistering, vm.name)
-                    await deregister(runnerID: runnerID, target: target, via: github)
+                    await deregister(runnerID: jit.runnerID, target: target, via: github)
                 }
-
                 report(.stopping, vm.name)
                 await releaseOnce(vm)
             } catch {
                 if Task.isCancelled { break }
                 report(.retrying)
-                Log.warn("[\(tag)] acquire failed: \(error) — retrying in 5s")
+                Log.warn("[\(tag)] slot error: \(error) — retrying in 5s")
                 try? await Task.sleep(for: .seconds(5))
             }
         }
         report(.done)
+    }
+
+    /// How long a freshly-created leaf has to get its runner online before we give up and
+    /// replace it (covers boot + startup-script + register). Tunable later via `monitor`.
+    static let registrationDeadline: TimeInterval = 300
+    static let runnerPollInterval: Duration = .seconds(15)
+
+    /// Watch one leaf's runner on GitHub. "offline/absent" means *still starting* until the
+    /// runner has been seen online (bounded by `registrationDeadline`), after which it means
+    /// *done → replace*. GitHub unreachable = unknown → keep waiting (never abandon a possible
+    /// live job). Returns when the job is done, the runner never registers in time, or the
+    /// slot is cancelled.
+    private func monitorRunner(tag: String, pool: String, vm: String, github: any JITConfigProvider, target: GitHubTarget?) async {
+        guard let target else {
+            while !Task.isCancelled { try? await Task.sleep(for: Self.runnerPollInterval) }
+            return
+        }
+        let deadline = Date().addingTimeInterval(Self.registrationDeadline)
+        var sawOnline = false
+        while !Task.isCancelled {
+            switch await runnerLiveness(name: vm, github: github, target: target) {
+            case .online:
+                sawOnline = true
+                recordPhase(tag: tag, pool: pool, vm: vm, phase: .ready)
+            case .offline:
+                if sawOnline { Log.info("[\(tag)] runner \(vm) finished"); return }
+                if Date() > deadline {
+                    Log.warn("[\(tag)] runner \(vm) never registered within \(Int(Self.registrationDeadline))s — replacing")
+                    return
+                }
+                recordPhase(tag: tag, pool: pool, vm: vm, phase: .starting)
+            case .unknown:
+                break   // GitHub unreachable — don't decide; keep waiting
+            }
+            do { try await Task.sleep(for: Self.runnerPollInterval) } catch { return }
+        }
+    }
+
+    private enum RunnerLiveness { case online, offline, unknown }
+
+    /// One leaf's runner state on GitHub. Absent (not yet registered, or already
+    /// deregistered) reads as `.offline`; an API error reads as `.unknown`.
+    private func runnerLiveness(name: String, github: any JITConfigProvider, target: GitHubTarget) async -> RunnerLiveness {
+        guard let runners = try? await github.listRunners(target: target) else { return .unknown }
+        guard let runner = runners.first(where: { $0.name == name }) else { return .offline }
+        return runner.isOffline ? .offline : .online
     }
 
     /// Deregister a runner from GitHub, shielded from the caller's cancellation and
