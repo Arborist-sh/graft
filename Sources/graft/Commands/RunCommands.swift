@@ -6,8 +6,8 @@ import GraftCore
 /// `graft run` — start the pool supervisor and keep pools filled until stopped.
 struct Run: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "run",
-        abstract: "Start the pool supervisor (runs until stopped)."
+        commandName: "tend",
+        abstract: "Tend the pool — supervise runners until stopped (+ --monitor to report health)."
     )
 
     @Option(name: .shortAndLong, help: "Config path (overrides profile resolution).")
@@ -22,8 +22,8 @@ struct Run: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Echo every step (runner output + events) above the live status, instead of just the spinner.")
     var verbose = false
 
-    @Flag(help: "Also tend in-process: run the health monitor (detection-only) alongside the supervisor.")
-    var tend = false
+    @Flag(help: "Also report health to the configured webhook + logs while tending (the health monitor).")
+    var monitor = false
 
     func run() async throws {
         let path = GraftConfig.resolvePath(explicit: config, profile: profile)
@@ -80,7 +80,7 @@ struct Run: AsyncParsableCommand {
         // by construction, so it shares the supervisor's state file and is unambiguously
         // the trunk for the state-backed detectors (wedged-slot, deadwood).
         func startMonitorIfRequested() -> Task<Void, Never>? {
-            guard tend else { return nil }
+            guard monitor else { return nil }
             let detectors = HealthMonitorFactory.detectors(
                 config: cfg, provider: provider, secrets: secrets, isTrunk: true)
             let reporter = HealthReporter(sinks: HealthMonitorFactory.sinks(monitor: cfg.monitor))

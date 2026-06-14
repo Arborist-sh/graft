@@ -1,19 +1,37 @@
 import ArgumentParser
-import Dispatch
 import Foundation
 import GraftCore
 
-/// `graft arborist` — the tree-doctor: verify the whole GitHub App auth chain against
-/// the real API without booting a VM: read key → sign JWT → find installation → mint
-/// token → create a probe JIT runner → delete it. Leaves no trace on the org.
+/// `graft arborist` — the caretaker. Everything operational routes through here:
 ///
-/// Run it bare and it picks the App from the keys in your keychain and prompts for
-/// the target; or pass `--app-id`/`--target` to skip the prompts; or `--config`/
-/// `--pool` to check pools from a config file.
+///   graft arborist tend       supervise the pool (+ --monitor to report health)
+///   graft arborist check      verify the GitHub App auth chain (no VM boot)
+///   graft arborist canopy     at-a-glance tree overview
+///   graft arborist leaves     list leaves (VMs)
+///   graft arborist branches   list branches (workers)
+///   graft arborist runners    list / prune GitHub runners
+///
+/// A parent command — run a subcommand. (`Run` registers here as `tend`, `Tree.Status`
+/// as `canopy`; the structs live in their own files.)
 struct Arborist: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "arborist",
-        abstract: "Tree-doctor: verify the GitHub App auth chain end-to-end (no VM boot)."
+        abstract: "Tend the tree — supervise, check, and inspect.",
+        subcommands: [Run.self, Check.self, Tree.Status.self, Tree.Branches.self, Tree.Leaves.self, Runners.self]
+    )
+}
+
+/// `graft arborist check` — verify the whole GitHub App auth chain against the real API
+/// without booting a VM: read key → sign JWT → find installation → mint token → create a
+/// probe JIT runner → delete it. Leaves no trace on the org.
+///
+/// Run it bare and it picks the App from the keys in your keychain and prompts for the
+/// target; or pass `--app-id`/`--target` to skip the prompts; or `--config`/`--pool` to
+/// check pools from a config file.
+struct Check: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "check",
+        abstract: "Verify the GitHub App auth chain end-to-end (no VM boot)."
     )
 
     @Option(name: .long, help: "GitHub App ID for a one-off check (default: check the active profile's pools).")
@@ -40,15 +58,7 @@ struct Arborist: AsyncParsableCommand {
     @Flag(help: "Stop after minting a token — don't create/delete a probe runner.")
     var noProbe = false
 
-    @Flag(help: "Tend continuously: run the full health-monitor loop (detection-only) until stopped.")
-    var tend = false
-
-    @Option(name: .long, help: "With --tend, seconds between sweeps (default: config `monitor.intervalSeconds`, else 60).")
-    var interval: Int?
-
     func run() async throws {
-        if tend { try await runTend(); return }
-
         let targets: [GitHubConfig]
         let scope: KeychainScope
 
@@ -123,71 +133,10 @@ struct Arborist: AsyncParsableCommand {
         print("\nall checks passed ✓  — GitHub App auth is wired correctly")
     }
 
-    // MARK: Continuous tending (--tend)
-
-    /// Run the detection-first health monitor against the active profile until stopped.
-    /// Reuses the same auth/runner/capacity/slot/deadwood probes the one-shot doctor and
-    /// supervisor already have — it just runs them on a cadence and reports. It does NOT
-    /// remediate anything.
-    private func runTend() async throws {
-        let path = GraftConfig.resolvePath(explicit: config, profile: profile)
-        let cfg = try GraftConfig.load(from: path)
-        guard !cfg.pools.isEmpty else {
-            throw GraftError("no pools in the active profile — run `graft init` first (or use the one-shot `graft arborist`)")
-        }
-
-        let scope = system ? .system : (KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login)
-        let secrets = KeychainSecretStore(scope: scope)
-        let provider = try Run.makeProvider(cfg)
-
-        let intervalSeconds = interval ?? cfg.monitor?.intervalSeconds ?? 60
-        let heartbeatConfig = cfg.monitor?.heartbeatSeconds ?? 300
-        let heartbeat: TimeInterval? = heartbeatConfig > 0 ? TimeInterval(heartbeatConfig) : nil
-
-        // State-backed detectors (wedged-slot, deadwood) only make sense where the
-        // supervisor's state lives. If no `graft run` is up on this host, run as a
-        // read-only observer (auth/runner/capacity only) so deadwood can't false-fire.
-        let isTrunk = Daemon.runningPID() != nil
-        let detectors = HealthMonitorFactory.detectors(
-            config: cfg, provider: provider, secrets: secrets, isTrunk: isTrunk)
-        let reporter = HealthReporter(sinks: HealthMonitorFactory.sinks(monitor: cfg.monitor))
-        let monitor = HealthMonitor(
-            detectors: detectors, reporter: reporter,
-            interval: .seconds(intervalSeconds), heartbeatSeconds: heartbeat
-        )
-
-        let webhookCount = cfg.monitor?.webhooks.count ?? 0
-        printErr("arborist tending — \(detectors.count) detectors every \(intervalSeconds)s, "
-            + "\(webhookCount) webhook(s); log → \(JSONLFileSink.defaultURL.path)")
-        if !isTrunk {
-            printErr("observer mode: no local `graft run` — slot + deadwood checks off (auth/runner/capacity only).")
-        }
-        printErr("detection-only: nothing is remediated. Ctrl-C to stop.")
-
-        let task = Task { await monitor.run() }
-        let sources = Self.installSignalHandlers {
-            printErr("\nstopping arborist…")
-            task.cancel()
-        }
-        defer { sources.forEach { $0.cancel() } }
-        await task.value
-    }
-
-    /// Trap SIGINT/SIGTERM and invoke `handler`. Returns the sources to keep alive.
-    private static func installSignalHandlers(_ handler: @escaping @Sendable () -> Void) -> [DispatchSourceSignal] {
-        [SIGINT, SIGTERM].map { sig in
-            signal(sig, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-            source.setEventHandler(handler: handler)
-            source.resume()
-            return source
-        }
-    }
-
     // MARK: Interactive pickers
 
-    /// Choose an App ID from the keys stored in the keychain. Auto-selects when
-    /// there's only one. Listing reads attributes only — no Keychain prompt here.
+    /// Choose an App ID from the keys stored in the keychain. Auto-selects when there's
+    /// only one. Listing reads attributes only — no Keychain prompt here.
     private static func pickAppID(scope: KeychainScope) throws -> Int {
         let ids = try KeychainSecretStore(scope: scope).storedAppIDs()
         guard !ids.isEmpty else {

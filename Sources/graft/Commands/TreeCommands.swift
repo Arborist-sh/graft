@@ -98,7 +98,7 @@ extension Tree {
 extension Tree {
     /// One-glance tree health: trunk, branch count, free capacity, graft's leaves.
     struct Status: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Show tree health (trunk, branches, free capacity).")
+        static let configuration = CommandConfiguration(commandName: "canopy", abstract: "Canopy — at-a-glance tree overview (trunk, branches, free capacity).")
 
         @Option(name: .long, help: "Profile to read (default: active profile).")
         var profile: String?
@@ -198,15 +198,15 @@ extension Tree {
         @Option(name: .long, help: "Controller data directory (state + accounts persist here).")
         var dataDir: String = Tree.dataDir
 
-        @Flag(name: .long, help: "Also tend this trunk: host-vitals + controller-responding monitoring (detection-only).")
-        var tend = false
+        @Flag(name: .long, help: "Also report this trunk's host vitals + controller-responding health to the webhook/logs.")
+        var monitor = false
 
         func run() async throws {
             try await Tree.requireOrchard()
             try? FileManager.default.createDirectory(atPath: dataDir, withIntermediateDirectories: true)
 
             // Optional controller-host monitor: disk/memory + is the controller answering?
-            let monitorTask: Task<Void, Never>? = tend ? Tree.startHostMonitor(
+            let monitorTask: Task<Void, Never>? = monitor ? Tree.startHostMonitor(
                 HealthMonitorFactory.controllerDetectors(name: ProcessInfo.processInfo.hostName, responding: {
                     // Token is captured a beat after the controller starts — treat "not yet" as healthy.
                     guard let env = try? Tree.adminEnv(url: "http://127.0.0.1:6120") else { return true }
@@ -292,8 +292,8 @@ extension Tree {
         @Option(name: .long, help: "How many leaves this branch can hold (org.cirruslabs.tart-vms). Default: the host's auto-detected ceiling (2 on macOS). Use --leaves 1 per branch if running two branches on one Mac.")
         var leaves: Int?
 
-        @Flag(name: .long, help: "Also tend this branch: host-vitals monitoring (disk/memory/tart, detection-only).")
-        var tend = false
+        @Flag(name: .long, help: "Also report this branch's host vitals (disk/memory/tart) to the webhook/logs.")
+        var monitor = false
 
         func run() async throws {
             try await Tree.requireOrchard()
@@ -314,7 +314,7 @@ extension Tree {
                 let reserveNote = reserve.map { " · reserving \($0) GB" } ?? ""
                 printErr(ANSI.dim("    advertising \(leaves ?? 2) leaf slot(s)\(reserveNote)"))
             }
-            let monitorTask: Task<Void, Never>? = tend
+            let monitorTask: Task<Void, Never>? = monitor
                 ? Tree.startHostMonitor(HealthMonitorFactory.branchDetectors(name: name ?? ProcessInfo.processInfo.hostName))
                 : nil
             defer { monitorTask?.cancel() }
