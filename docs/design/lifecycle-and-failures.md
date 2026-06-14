@@ -326,7 +326,7 @@ The part that matters most. For each component: **graceful** (SIGINT), **hard ki
 ### Worker (branch)
 | | Behavior — **current** | **Should** |
 |---|---|---|
-| **Graceful** | The `orchard worker` process leaves its tart VMs running. ✅ **but `graft tree branch` now cleans up on Ctrl-C (Aspen+):** it traps the signal → SIGTERMs the worker → **sweeps the `orchard-graft-*` leaves** it booted, so a drop no longer strands VMs. Aborts this host's in-flight jobs (accepted worker-bounce trade-off, §0.7). | **Drain**: stop taking new leaves, let in-flight jobs *finish*, then destroy its leaves and exit (a `--drain` flag — see §8). |
+| **Graceful** | The `orchard worker` process leaves its tart VMs running. ✅ **but `graft tree branch` now cleans up on Ctrl-C (Aspen+):** traps the signal → SIGTERMs the worker → **deregisters the branch from the trunk** (`orchard delete worker` — frees its slots *immediately* instead of waiting out the ~120–180s heartbeat-stale window; best-effort, needs the admin token) → **sweeps the `orchard-graft-*` leaves** it booted. So a drop no longer strands VMs *or* leaves phantom capacity. Aborts this host's in-flight jobs (accepted worker-bounce trade-off, §0.7). | **Drain**: stop taking new leaves, let in-flight jobs *finish*, then destroy its leaves and exit (a `--drain` flag — see §8). |
 | **Hard kill** | tart VMs persist on disk (stranded); controller shows worker as ghost until stale | branch agent (`tree branch --tend`) flags stranded `orchard-graft-*` VMs (built); remediator reaps them |
 | **Restart** | Re-registers; does **not** reclaim its old stranded VMs | Re-register **and** reconcile local tart VMs against the controller — destroy any the controller doesn't know about |
 
@@ -539,7 +539,7 @@ sequenceDiagram
 | **GFT-20** deadwood false-positive | ✅ **DONE (Aspen):** ownership = `runners ∪ slots[].vmName` (`PoolState.ownedVMNames`); §5 in-flight leaf, matrix #9 |
 | **GFT-21** controller lock on Ctrl-C | ✅ **DONE (Aspen):** §2.4, §3 controller (signal trap + detect-and-refuse) |
 | **GFT-19** demand-driven autoscaling | 📐 **PROPOSAL** → §9 (builds on the GFT-18 elastic foundation) |
-| **NEW**: worker Ctrl-C cleanup | ✅ **DONE (Aspen+):** `graft tree branch`/`bonsai` trap Ctrl-C → SIGTERM the worker + sweep `orchard-graft-*` leaves (§3 worker) |
+| **NEW**: worker Ctrl-C cleanup | ✅ **DONE (Aspen+):** `graft tree branch`/`bonsai` trap Ctrl-C → SIGTERM the worker + **self-deregister from the trunk** (immediate capacity drop, no stale-window wait) + sweep `orchard-graft-*` leaves (§3 worker) |
 | **NEW**: worker graceful *drain* (wait for jobs) | §3 worker "should" — `--drain` flag, future (Ctrl-C currently aborts in-flight jobs per §0.7) |
 | **NEW**: worker reconnect-degraded | matrix #5 |
 | **NEW**: failed-leaf detector | matrix #8, §5 gap |

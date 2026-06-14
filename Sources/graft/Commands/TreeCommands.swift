@@ -211,6 +211,22 @@ extension Tree {
         printErr(ANSI.green("    leaves swept."))
     }
 
+    /// On a *deliberate* branch drop (Ctrl-C), proactively deregister the worker from the
+    /// trunk so the tree reflects the loss **immediately** — instead of the controller waiting
+    /// out the ~120–180s heartbeat-stale window before it stops counting the dead branch's
+    /// slots (we know this isn't a blip). Best-effort: needs the admin token (present when this
+    /// host can authenticate as admin, e.g. the trunk host); otherwise we fall back to the
+    /// stale window. Stop the worker process *before* calling this so it can't re-register.
+    static func deregisterBranch(name: String, url: String) async {
+        guard let env = try? adminEnv(url: url) else {
+            printErr(ANSI.dim("    (no admin token here — the trunk will drop this branch after the stale window)"))
+            return
+        }
+        if (try? await Shell.run("orchard", ["delete", "worker", name], environment: env, timeout: .seconds(15)))?.succeeded == true {
+            printErr(ANSI.dim("    deregistered branch '\(name)' from the trunk — capacity freed now."))
+        }
+    }
+
     /// Error for "a trunk is already running here" — names the PID and how to clear it.
     static func trunkAlreadyRunning(pid: Int32) -> GraftError {
         GraftError("a trunk is already running here (pid \(pid)) — it holds the controller's database lock.\n" +
@@ -388,8 +404,10 @@ extension Tree {
             printErr(ANSI.green("🌿  grafting a branch onto \(url)…"))
             let boot: String
             if let token { boot = token } else { boot = try await Tree.mintBootstrapToken(url: url) }
-            var args = ["worker", "run", url, "--bootstrap-token", boot]
-            if let name { args += ["--name", name] }
+            // Resolve the worker name deterministically (defaults to the hostname) and always
+            // pass it, so the name we monitor + deregister under matches what's registered.
+            let workerName = name ?? ProcessInfo.processInfo.hostName
+            var args = ["worker", "run", url, "--bootstrap-token", boot, "--name", workerName]
             if let labels {
                 for kv in labels.split(separator: ",") { args += ["--labels", kv.trimmingCharacters(in: .whitespaces)] }
             }
@@ -403,7 +421,7 @@ extension Tree {
                 printErr(ANSI.dim("    advertising \(leaves ?? 2) leaf slot(s)\(reserveNote)"))
             }
             let monitorTask: Task<Void, Never>? = monitor
-                ? Tree.startHostMonitor(HealthMonitorFactory.branchDetectors(name: name ?? ProcessInfo.processInfo.hostName))
+                ? Tree.startHostMonitor(HealthMonitorFactory.branchDetectors(name: workerName))
                 : nil
             defer { monitorTask?.cancel() }
 
@@ -428,8 +446,12 @@ extension Tree {
             defer { sources.forEach { $0.cancel() } }
 
             let code = try await worker.value
-            // On a user-initiated drop, clean up the leaves the worker left stranded.
-            if stopped.isSet { await Tree.sweepBranchLeaves() }
+            // On a user-initiated drop: tell the trunk we're gone (immediate capacity drop, no
+            // stale-window wait), then sweep the leaves the worker left stranded.
+            if stopped.isSet {
+                await Tree.deregisterBranch(name: workerName, url: url)
+                await Tree.sweepBranchLeaves()
+            }
             if code != 0 && !stopped.isSet { throw ExitCode(code) }
         }
     }
