@@ -189,7 +189,9 @@ final class ConfigStore: ObservableObject {
     /// detached background process. No-op if the graft CLI isn't found.
     func openNestInTerminal(short: String) {
         guard let graft = Self.graftPath else { return }
-        let cmd = "\(graft) nest \(short)"
+        // `exec $SHELL` after graft keeps the window alive whether the box shell held or
+        // graft exited early — so nothing vanishes and you always land in a usable shell.
+        let cmd = "\(graft) nest \(short); exec $SHELL -il"
         let iterm = FileManager.default.fileExists(atPath: "/Applications/iTerm.app")
         let app = iterm ? "iTerm" : "Terminal"
         let open = iterm
