@@ -1,15 +1,16 @@
 import SwiftUI
 
-/// The app's sections — the sidebar items. Dashboard · Canopy · Nests · Saplings · Seeds
-/// + config. Sapflow (health) slots in here next.
+/// The app's sections — the sidebar items. Dashboard · Canopy · Sapflow · Nests · Saplings ·
+/// Seeds + config.
 enum AppSection: String, CaseIterable, Identifiable {
-    case dashboard, canopy, nests, saplings, seeds, profiles, pools, secrets
+    case dashboard, canopy, sapflow, nests, saplings, seeds, profiles, pools, secrets
     var id: String { rawValue }
 
     func title(_ vocab: Vocabulary) -> String {
         switch self {
         case .dashboard: return Lex.dashboard(vocab)
         case .canopy:    return Lex.canopy(vocab)
+        case .sapflow:   return Lex.health(vocab)
         case .nests:     return Lex.nests(vocab)
         case .saplings:  return Lex.images(vocab)
         case .seeds:     return Lex.seeds(vocab)
@@ -23,6 +24,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .dashboard: return "gauge.with.dots.needle.33percent"
         case .canopy:    return "tree"
+        case .sapflow:   return "waveform.path.ecg"
         case .nests:     return "shippingbox"
         case .saplings:  return "leaf"
         case .seeds:     return "circle.hexagongrid"
@@ -55,6 +57,7 @@ struct RootView: View {
             switch section ?? .dashboard {
             case .dashboard: DashboardView(controller: controller)
             case .canopy:    CanopyView(config: config)
+            case .sapflow:   SapflowView(controller: controller)
             case .nests:     NestsView(config: config)
             case .saplings:  SaplingsView(config: config)
             case .seeds:     SeedsView(config: config, store: seedStore)
