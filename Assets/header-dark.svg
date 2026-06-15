@@ -1,12 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="520" height="116" viewBox="0 0 520 116">
-  <rect x="36" y="18" width="80" height="80" rx="19" fill="#f0ece0"/>
-  <g transform="translate(52,34) scale(0.48)" fill="#15613a">
-    <line x1="40" y1="92" x2="40" y2="33" stroke="#15613a" stroke-width="7" stroke-linecap="round"/>
-    <path d="M40 58 C40 45 58 45 70 40" fill="none" stroke="#15613a" stroke-width="7" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="150" viewBox="0 0 640 150">
+  <defs>
+    <path id="petal" d="M0 0 C -7 -5 -8 -15 -3.5 -20 C -2 -22 -0.8 -19 0 -20.5 C 0.8 -19 2 -22 3.5 -20 C 8 -15 7 -5 0 0 Z"/>
+    <g id="blossom">
+      <g fill="#ffc8db" stroke="#f7a8c5" stroke-width="1">
+        <use href="#petal"/>
+        <use href="#petal" transform="rotate(72)"/>
+        <use href="#petal" transform="rotate(144)"/>
+        <use href="#petal" transform="rotate(216)"/>
+        <use href="#petal" transform="rotate(288)"/>
+      </g>
+      <circle r="2.6" fill="#f7cf78"/>
+    </g>
+  </defs>
+
+  <!-- drifting blossoms -->
+  <use href="#blossom" transform="translate(360,38) scale(0.52) rotate(15)" opacity="0.85"/>
+  <use href="#blossom" transform="translate(560,86) scale(0.8) rotate(-12)" opacity="0.9"/>
+  <use href="#blossom" transform="translate(614,126) scale(0.46) rotate(28)" opacity="0.6"/>
+  <use href="#blossom" transform="translate(300,122) scale(0.42) rotate(-22)" opacity="0.55"/>
+  <use href="#blossom" transform="translate(470,124) scale(0.4) rotate(40)" opacity="0.5"/>
+
+  <!-- mark tile -->
+  <rect x="30" y="38" width="74" height="74" rx="18" fill="#1f2024"/>
+  <g transform="translate(44,52) scale(0.44)" fill="#f0ece0">
+    <line x1="40" y1="92" x2="40" y2="33" stroke="#f0ece0" stroke-width="7" stroke-linecap="round"/>
+    <path d="M40 58 C40 45 58 45 70 40" fill="none" stroke="#f0ece0" stroke-width="7" stroke-linecap="round"/>
     <circle cx="40" cy="58" r="4.5"/>
     <circle cx="72" cy="40" r="7.5"/>
     <path d="M40 35 Q29 19 50 12 Q49 31 40 35 Z"/>
   </g>
-  <text x="138" y="60" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="42" font-weight="bold" fill="#ececec">Graft</text>
-  <text x="140" y="86" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" fill="#9a9a9a">One golden Tart VM image — dev box and CI</text>
+
+  <!-- wordmark + tagline -->
+  <text x="122" y="82" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="46" font-weight="bold" fill="#f4f1e6">Graft</text>
+  <text x="124" y="108" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" fill="#b9b9bd">One golden Tart VM image — dev box and CI</text>
+
+  <!-- version pill -->
+  <rect x="438" y="22" width="172" height="30" rx="15" fill="#3b2731"/>
+  <use href="#blossom" transform="translate(457,37) scale(0.5)"/>
+  <text x="474" y="42" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="600" fill="#f3c6d6">v0.5.0 · Sakura</text>
 </svg>

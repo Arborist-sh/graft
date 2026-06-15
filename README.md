@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="Assets/header-dark.png">
-    <img src="Assets/header-light.png" alt="Graft — one golden Tart VM image for your dev box and your CI" width="480">
+    <img src="Assets/header-light.png" alt="Graft — one golden Tart VM image for your dev box and your CI (v0.5.0 Sakura)" width="520">
   </picture>
 </p>
 
