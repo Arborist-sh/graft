@@ -39,7 +39,7 @@ struct DashboardView: View {
                     .font(.title3.weight(.semibold))
                 if controller.isRunning {
                     let n = controller.slots.count
-                    Text("· \(n) leaf\(n == 1 ? "" : "s")")
+                    Text("· \(n) \(n == 1 ? "leaf" : "leaves")")
                         .foregroundStyle(.secondary)
                 }
             }
