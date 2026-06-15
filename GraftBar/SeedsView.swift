@@ -359,7 +359,7 @@ struct StringListEditor: View {
             }
             ForEach(items.indices, id: \.self) { idx in
                 HStack(spacing: 6) {
-                    TextField(prompt, text: $items[idx])
+                    TextField("", text: $items[idx], prompt: Text(prompt))
                     Button { items.remove(at: idx) } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
                 }
@@ -387,8 +387,8 @@ struct KVEditor: View {
             }
             ForEach($rows) { $row in
                 HStack(spacing: 6) {
-                    TextField("key", text: $row.key).frame(width: 150)
-                    TextField("value", text: $row.value)
+                    TextField("", text: $row.key, prompt: Text("key")).frame(width: 150)
+                    TextField("", text: $row.value, prompt: Text("value"))
                     Button { rows.removeAll { $0.id == row.id } } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
                 }
@@ -446,12 +446,12 @@ struct RepoEditor: View {
             ForEach($repos) { $repo in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        TextField("repo URL", text: $repo.url)
-                        TextField("ref", text: $repo.ref).frame(width: 90)
+                        TextField("", text: $repo.url, prompt: Text("repo URL"))
+                        TextField("", text: $repo.ref, prompt: Text("ref")).frame(width: 90)
                         Button { repos.removeAll { $0.id == repo.id } } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).foregroundStyle(.secondary)
                     }
-                    TextField("ssh-key (guest path, for private repos)", text: $repo.sshKey)
+                    TextField("", text: $repo.sshKey, prompt: Text("ssh-key (guest path, for private repos)"))
                     TextEditor(text: $repo.run)
                         .font(.system(size: 11, design: .monospaced)).frame(height: 54)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.2)))
