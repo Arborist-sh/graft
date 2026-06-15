@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 import GraftCore
 
-/// The Seeds section — edit `.graft` image recipes either as a structured **Form** (every
-/// field, with add/remove blocks + a custom-script block) or as **Raw** YAML. The Form
-/// round-trips through `ImageRecipe`, so a form-save rewrites clean YAML (comments not
-/// preserved — Raw mode is the lossless escape hatch). Render previews the compiled
-/// provisioning script; Grow builds the sapling.
+/// The Seeds section — build a `.graft` image recipe as a **builder** (start with name/from,
+/// "+ Add" only the components you want — Add toolchain → Python, add as many custom scripts
+/// or sims as you like) or edit the **Raw** YAML. The Form round-trips through `ImageRecipe`,
+/// so a form-save rewrites clean YAML (Raw is the lossless escape hatch). Render previews the
+/// compiled provisioning script; Grow builds the sapling.
 struct SeedsView: View {
     @ObservedObject var config: ConfigStore
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
@@ -27,9 +27,7 @@ struct SeedsView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            Group {
-                if mode == .form { formEditor } else { rawEditor }
-            }
+            Group { if mode == .form { formEditor } else { rawEditor } }
         }
         .task { images = await config.localImages() }
         .sheet(isPresented: $rendering) { RenderSheet(script: renderOutput) }
@@ -41,29 +39,22 @@ struct SeedsView: View {
         HStack(spacing: 10) {
             Text(Lex.seeds(vocab)).font(.title2.weight(.semibold))
             Picker("", selection: Binding(get: { mode }, set: { switchMode(to: $0) })) {
-                Text("Form").tag(Mode.form)
-                Text("Raw").tag(Mode.raw)
+                Text("Builder").tag(Mode.form); Text("Raw").tag(Mode.raw)
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 130)
-            if let path {
-                Text((path as NSString).lastPathComponent + (dirty ? " •" : "")).font(.caption).foregroundStyle(.secondary)
-            } else if dirty {
-                Text("untitled •").font(.caption).foregroundStyle(.secondary)
-            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+            if let path { Text((path as NSString).lastPathComponent + (dirty ? " •" : "")).font(.caption).foregroundStyle(.secondary) }
+            else if dirty { Text("untitled •").font(.caption).foregroundStyle(.secondary) }
             if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
             Spacer()
             Button { open() } label: { Label("Open…", systemImage: "folder") }
-            Button { newFromTemplate() } label: { Label("New", systemImage: "doc.badge.plus") }
+            Button { newDoc() } label: { Label("New", systemImage: "doc.badge.plus") }
             Button { save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
-            Button { render() } label: { Label("Render", systemImage: "eye") }
-                .disabled(!config.graftAvailable)
+            Button { render() } label: { Label("Render", systemImage: "eye") }.disabled(!config.graftAvailable)
             Button { grow() } label: { Label("Grow", systemImage: "hammer") }
                 .buttonStyle(.borderedProminent).disabled(!config.graftAvailable)
         }
         .padding(16)
     }
-
-    // MARK: Raw editor
 
     private var rawEditor: some View {
         TextEditor(text: $text)
@@ -72,7 +63,7 @@ struct SeedsView: View {
             .padding(8)
     }
 
-    // MARK: Form editor
+    // MARK: Builder
 
     private var formEditor: some View {
         Form {
@@ -87,112 +78,150 @@ struct SeedsView: View {
                         }
                     }
                 }
-                TextField("Description", text: $form.description, prompt: Text("optional"))
             }
 
-            Section("Toolchain") {
-                TextField("Xcode", text: $form.xcode, prompt: Text("e.g. 16.2"))
-                TextField("Node", text: $form.node, prompt: Text("e.g. 20"))
-                TextField("Ruby", text: $form.ruby, prompt: Text("e.g. 3.3.0"))
-                TextField("Python", text: $form.python, prompt: Text("e.g. 3.12"))
-                TextField("Java", text: $form.java, prompt: Text("e.g. 21"))
-                TextField("Rust", text: $form.rust, prompt: Text("e.g. stable"))
-                TextField("Package manager", text: $form.packageManager, prompt: Text("pnpm | yarn | bun"))
-                TextField("CocoaPods", text: $form.cocoapods, prompt: Text("e.g. 1.15.2"))
-                Toggle("Go", isOn: $form.go)
-                Toggle("Fastlane", isOn: $form.fastlane)
-                Toggle("Xcode first-launch", isOn: $form.xcodeFirstLaunch)
-                StringListEditor(title: "Homebrew", items: $form.brew, prompt: "package")
-                StringListEditor(title: "Gems", items: $form.gems, prompt: "gem")
-                StringListEditor(title: "npm (global)", items: $form.npm, prompt: "package")
-            }
-
-            Section("Simulators") {
-                StringListEditor(title: "Runtimes", items: $form.simulatorRuntimes, prompt: "iOS 18.2")
-                StringListEditor(title: "Warm", items: $form.warmSimulators, prompt: "iPhone 16")
-            }
-
-            Section {
-                TextEditor(text: $form.runScript)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 90)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.25)))
-                TextField("Script file", text: $form.script, prompt: Text("path to a .sh (relative to the seed)"))
-            } header: {
-                Text("Custom script")
-            } footer: {
-                Text("`run:` — shell commands run after the compiled steps (one per line). `script:` runs a file first.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("Caches") {
-                Toggle("Warm CocoaPods spec repo", isOn: $form.podRepoWarm)
-                Toggle("Cleanup (smaller image)", isOn: $form.cleanup)
-                StringListEditor(title: "Prefetch", items: $form.prefetch, prompt: "command")
-                StringListEditor(title: "Verify", items: $form.verify, prompt: "assertion (must exit 0)")
-                RepoEditor(repos: $form.repos)
-            }
-
-            Section("System") {
-                TextField("Git user", text: $form.gitUser, prompt: Text("optional"))
-                TextField("Git email", text: $form.gitEmail, prompt: Text("optional"))
-                TextField("Timezone", text: $form.timezone, prompt: Text("e.g. America/New_York"))
-                TextField("Hostname", text: $form.hostname, prompt: Text("optional"))
-                Toggle("Disable Spotlight", isOn: $form.disableSpotlight)
-                Toggle("Disable sleep", isOn: $form.disableSleep)
-                StringListEditor(title: "Known hosts", items: $form.knownHosts, prompt: "github.com")
-                KVEditor(title: "Env", rows: $form.env)
-                KVEditor(title: "Write files", rows: $form.write)
-                KVEditor(title: "Labels", rows: $form.labels)
-            }
-
-            Section("VM shape & build") {
-                TextField("CPU cores", text: $form.cpu, prompt: Text("optional"))
-                TextField("Memory (MB)", text: $form.memory, prompt: Text("optional"))
-                TextField("Disk (GB)", text: $form.disk, prompt: Text("optional · grow-only"))
-                TextField("Display", text: $form.display, prompt: Text("WIDTHxHEIGHT"))
-                Picker("Guest OS", selection: $form.os) {
-                    Text("Default (macOS)").tag(GuestOS?.none)
-                    Text("macOS").tag(GuestOS?.some(.macOS))
-                    Text("Linux").tag(GuestOS?.some(.linux))
+            ForEach(Comp.Category.allCases, id: \.self) { cat in
+                let comps = Comp.allCases.filter { $0.category == cat && form.active.contains($0) }
+                if !comps.isEmpty {
+                    Section(cat.rawValue) { ForEach(comps) { comp in compView(comp) } }
                 }
-                TextField("Build network", text: $form.network, prompt: Text("nat | bridged:en0 | softnet"))
             }
+
+            Section { addMenu }
         }
         .formStyle(.grouped)
         .onChange(of: form) { dirty = true }
+    }
+
+    private var addMenu: some View {
+        Menu {
+            ForEach(Comp.Category.allCases, id: \.self) { cat in
+                let avail = Comp.allCases.filter { $0.category == cat && !form.active.contains($0) }
+                if !avail.isEmpty {
+                    Menu(cat.rawValue) { ForEach(avail) { comp in Button(comp.title) { add(comp) } } }
+                }
+            }
+        } label: { Label("Add component", systemImage: "plus.circle.fill") }
+    }
+
+    @ViewBuilder
+    private func compView(_ comp: Comp) -> some View {
+        switch comp {
+        case .xcode: fieldRow(comp, $form.xcode, "e.g. 16.2")
+        case .node: fieldRow(comp, $form.node, "e.g. 20")
+        case .ruby: fieldRow(comp, $form.ruby, "e.g. 3.3.0")
+        case .python: fieldRow(comp, $form.python, "e.g. 3.12")
+        case .java: fieldRow(comp, $form.java, "e.g. 21")
+        case .rust: fieldRow(comp, $form.rust, "e.g. stable")
+        case .packageManager: fieldRow(comp, $form.packageManager, "pnpm | yarn | bun")
+        case .cocoapods: fieldRow(comp, $form.cocoapods, "e.g. 1.15.2")
+        case .go, .fastlane, .xcodeFirstLaunch, .podRepoWarm, .cleanup, .disableSpotlight, .disableSleep:
+            flagRow(comp)
+        case .brew: StringListEditor(title: comp.title, items: $form.brew, prompt: "package", onRemoveBlock: { form.remove(comp) })
+        case .gems: StringListEditor(title: comp.title, items: $form.gems, prompt: "gem", onRemoveBlock: { form.remove(comp) })
+        case .npm: StringListEditor(title: comp.title, items: $form.npm, prompt: "package", onRemoveBlock: { form.remove(comp) })
+        case .simulatorRuntimes: StringListEditor(title: comp.title, items: $form.simulatorRuntimes, prompt: "iOS 18.2", onRemoveBlock: { form.remove(comp) })
+        case .warmSimulators: StringListEditor(title: comp.title, items: $form.warmSimulators, prompt: "iPhone 16", onRemoveBlock: { form.remove(comp) })
+        case .knownHosts: StringListEditor(title: comp.title, items: $form.knownHosts, prompt: "github.com", onRemoveBlock: { form.remove(comp) })
+        case .prefetch: StringListEditor(title: comp.title, items: $form.prefetch, prompt: "command", onRemoveBlock: { form.remove(comp) })
+        case .verify: StringListEditor(title: comp.title, items: $form.verify, prompt: "assertion (exit 0)", onRemoveBlock: { form.remove(comp) })
+        case .scripts: ScriptsEditor(scripts: $form.scripts, onRemoveBlock: { form.remove(comp) })
+        case .scriptFile: fieldRow(comp, $form.scriptFile, "path to a .sh (relative to the seed)")
+        case .repos: RepoEditor(repos: $form.repos, onRemoveBlock: { form.remove(comp) })
+        case .env: KVEditor(title: comp.title, rows: $form.env, onRemoveBlock: { form.remove(comp) })
+        case .write: KVEditor(title: comp.title, rows: $form.write, onRemoveBlock: { form.remove(comp) })
+        case .labels: KVEditor(title: comp.title, rows: $form.labels, onRemoveBlock: { form.remove(comp) })
+        case .git:
+            blockGroup(comp) { TextField("Git user", text: $form.gitUser); TextField("Git email", text: $form.gitEmail) }
+        case .timezone: fieldRow(comp, $form.timezone, "America/New_York")
+        case .hostname: fieldRow(comp, $form.hostname, "optional")
+        case .description: fieldRow(comp, $form.description, "optional")
+        case .vmShape:
+            blockGroup(comp) {
+                TextField("CPU cores", text: $form.cpu, prompt: Text("optional"))
+                TextField("Memory (MB)", text: $form.memory, prompt: Text("optional"))
+                TextField("Disk (GB)", text: $form.disk, prompt: Text("grow-only"))
+                TextField("Display", text: $form.display, prompt: Text("WIDTHxHEIGHT"))
+            }
+        case .os:
+            LabeledContent(comp.title) {
+                HStack(spacing: 6) {
+                    Picker("", selection: $form.os) { Text("macOS").tag(GuestOS.macOS); Text("Linux").tag(GuestOS.linux) }
+                        .labelsHidden().fixedSize()
+                    Spacer(); removeX(comp)
+                }
+            }
+        case .network: fieldRow(comp, $form.network, "nat | bridged:en0 | softnet")
+        }
+    }
+
+    // MARK: Builder helpers
+
+    private func fieldRow(_ comp: Comp, _ binding: Binding<String>, _ prompt: String) -> some View {
+        LabeledContent(comp.title) {
+            HStack(spacing: 6) { TextField("", text: binding, prompt: Text(prompt)); removeX(comp) }
+        }
+    }
+
+    private func flagRow(_ comp: Comp) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text(comp.title); Spacer(); removeX(comp)
+        }
+    }
+
+    private func blockGroup<Content: View>(_ comp: Comp, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack { Text(comp.title).font(.subheadline.weight(.medium)); Spacer(); removeX(comp) }
+            content()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func removeX(_ comp: Comp) -> some View {
+        Button { form.remove(comp) } label: { Image(systemName: "minus.circle.fill") }
+            .buttonStyle(.borderless).foregroundStyle(.secondary).help("Remove \(comp.title)")
+    }
+
+    private func add(_ c: Comp) {
+        form.active.insert(c)
+        switch c {
+        case .brew where form.brew.isEmpty: form.brew = [""]
+        case .gems where form.gems.isEmpty: form.gems = [""]
+        case .npm where form.npm.isEmpty: form.npm = [""]
+        case .simulatorRuntimes where form.simulatorRuntimes.isEmpty: form.simulatorRuntimes = [""]
+        case .warmSimulators where form.warmSimulators.isEmpty: form.warmSimulators = [""]
+        case .knownHosts where form.knownHosts.isEmpty: form.knownHosts = [""]
+        case .prefetch where form.prefetch.isEmpty: form.prefetch = [""]
+        case .verify where form.verify.isEmpty: form.verify = [""]
+        case .scripts where form.scripts.isEmpty: form.scripts = [ScriptRow()]
+        case .repos where form.repos.isEmpty: form.repos = [RepoRow()]
+        case .env where form.env.isEmpty: form.env = [KVRow()]
+        case .write where form.write.isEmpty: form.write = [KVRow()]
+        case .labels where form.labels.isEmpty: form.labels = [KVRow()]
+        default: break
+        }
     }
 
     // MARK: Mode + sync
 
     private func switchMode(to new: Mode) {
         guard new != mode else { return }
-        if new == .raw {
-            syncFormToText()
-            mode = .raw
-        } else {
-            if loadFormFromText() { mode = .form; status = nil }
-            else { status = "Can't show the form — fix the YAML in Raw first."; mode = .raw }
-        }
+        if new == .raw { syncFormToText(); mode = .raw }
+        else if loadFormFromText() { mode = .form; status = nil }
+        else { status = "Can't show the builder — fix the YAML in Raw first." }
     }
 
-    private func syncFormToText() {
-        if let yaml = try? form.toRecipe().yamlString() { text = yaml }
-    }
+    private func syncFormToText() { if let yaml = try? form.toRecipe().yamlString() { text = yaml } }
 
     @discardableResult
     private func loadFormFromText() -> Bool {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { form = RecipeForm(); return true }
         guard let r = try? ImageRecipe.parse(text) else { return false }
-        form = RecipeForm(from: r)
-        return true
+        form = RecipeForm(from: r); return true
     }
 
-    /// Make `text` current for save/render/grow regardless of mode.
-    private func canonicalText() -> String {
-        if mode == .form { syncFormToText() }
-        return text
-    }
+    private func canonicalText() -> String { if mode == .form { syncFormToText() }; return text }
 
     // MARK: Actions
 
@@ -202,18 +231,13 @@ struct SeedsView: View {
         panel.message = "Open a .graft seed (also YAML / JSON)"
         guard panel.runModal() == .OK, let url = panel.url, let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
         text = contents; path = url.path; dirty = false; status = nil
-        if mode == .form, !loadFormFromText() {
-            mode = .raw; status = "Opened in Raw — the form couldn't parse this YAML."
-        }
+        if mode == .form, !loadFormFromText() { mode = .raw; status = "Opened in Raw — the builder couldn't parse this YAML." }
     }
 
-    private func newFromTemplate() {
-        Task {
-            let tmpl = await config.seedTemplate()
-            text = tmpl.isEmpty ? "name: my-image\nfrom: ghcr.io/cirruslabs/macos-sequoia-xcode:latest\n" : tmpl
-            path = nil; dirty = true; status = nil
-            if mode == .form { _ = loadFormFromText() }
-        }
+    private func newDoc() {
+        text = ""; path = nil; dirty = false; status = nil
+        form = RecipeForm()
+        if mode == .raw { text = "name: my-image\nfrom: ghcr.io/cirruslabs/macos-sequoia-xcode:latest\n" }
     }
 
     @discardableResult
@@ -250,18 +274,22 @@ struct SeedsView: View {
 
 // MARK: - Reusable editors
 
-/// A growable list of single-line strings (brew packages, sim runtimes, prefetch, …).
 struct StringListEditor: View {
     let title: String
     @Binding var items: [String]
     var prompt: String = ""
+    var onRemoveBlock: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.subheadline)
+                Text(title).font(.subheadline.weight(.medium))
                 Spacer()
                 Button { items.append("") } label: { Image(systemName: "plus.circle") }.buttonStyle(.borderless)
+                if let onRemoveBlock {
+                    Button(action: onRemoveBlock) { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
             }
             ForEach(items.indices, id: \.self) { idx in
                 HStack(spacing: 6) {
@@ -275,17 +303,21 @@ struct StringListEditor: View {
     }
 }
 
-/// A growable list of key/value rows (env, write, labels).
 struct KVEditor: View {
     let title: String
     @Binding var rows: [KVRow]
+    var onRemoveBlock: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.subheadline)
+                Text(title).font(.subheadline.weight(.medium))
                 Spacer()
                 Button { rows.append(KVRow()) } label: { Image(systemName: "plus.circle") }.buttonStyle(.borderless)
+                if let onRemoveBlock {
+                    Button(action: onRemoveBlock) { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
             }
             ForEach($rows) { $row in
                 HStack(spacing: 6) {
@@ -300,16 +332,50 @@ struct KVEditor: View {
     }
 }
 
-/// Precache repos — clone a repo at build time to warm global caches, source discarded.
-struct RepoEditor: View {
-    @Binding var repos: [RepoRow]
+/// Multiple custom-script blocks (the `run:` list) — add as many as you want.
+struct ScriptsEditor: View {
+    @Binding var scripts: [ScriptRow]
+    var onRemoveBlock: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Precache repos").font(.subheadline)
+                Text("Custom scripts").font(.subheadline.weight(.medium))
+                Spacer()
+                Button { scripts.append(ScriptRow()) } label: { Image(systemName: "plus.circle") }.buttonStyle(.borderless)
+                if let onRemoveBlock {
+                    Button(action: onRemoveBlock) { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+            }
+            ForEach($scripts) { $row in
+                HStack(alignment: .top, spacing: 6) {
+                    TextEditor(text: $row.body)
+                        .font(.system(size: 11, design: .monospaced)).frame(height: 64)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.2)))
+                    Button { scripts.removeAll { $0.id == row.id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct RepoEditor: View {
+    @Binding var repos: [RepoRow]
+    var onRemoveBlock: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Precache repos").font(.subheadline.weight(.medium))
                 Spacer()
                 Button { repos.append(RepoRow()) } label: { Image(systemName: "plus.circle") }.buttonStyle(.borderless)
+                if let onRemoveBlock {
+                    Button(action: onRemoveBlock) { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
             }
             ForEach($repos) { $repo in
                 VStack(alignment: .leading, spacing: 4) {
@@ -324,8 +390,7 @@ struct RepoEditor: View {
                         .font(.system(size: 11, design: .monospaced)).frame(height: 54)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.2)))
                 }
-                .padding(8)
-                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                .padding(8).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .padding(.vertical, 2)
