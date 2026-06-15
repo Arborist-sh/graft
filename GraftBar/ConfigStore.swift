@@ -198,15 +198,17 @@ final class ConfigStore: ObservableObject {
         runInTerminal("\(graft) nest \(short); exec $SHELL -il")
     }
 
-    /// Run a command in a new Terminal (or iTerm) window. For long, output-heavy, or
-    /// interactive flows (nest shell, sapling builds, pulls) the user needs to watch live.
+    /// Run a command in a real terminal window so the user can watch long / interactive /
+    /// output-heavy flows (nest shell, sapling builds, pulls). Writes a temp executable
+    /// `.command` script and `open`s it — Terminal runs `.command` files directly. This is
+    /// far more reliable than osascript `do script` / iTerm `command` (which mangle a
+    /// compound `cmd; exec $SHELL` string and need Automation permission).
     private func runInTerminal(_ command: String) {
-        let iterm = FileManager.default.fileExists(atPath: "/Applications/iTerm.app")
-        let app = iterm ? "iTerm" : "Terminal"
-        let open = iterm
-            ? "tell application \"iTerm\" to create window with default profile command \"\(command)\""
-            : "tell application \"Terminal\" to do script \"\(command)\""
-        Self.launchDetached("/usr/bin/osascript", ["-e", open, "-e", "tell application \"\(app)\" to activate"])
+        let script = "#!/bin/bash\n\(command)\n"
+        let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("graft-\(UUID().uuidString).command")
+        guard (try? script.write(toFile: tmp, atomically: true, encoding: .utf8)) != nil else { return }
+        try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o755))], ofItemAtPath: tmp)
+        Self.launchDetached("/usr/bin/open", [tmp])
     }
 
     // MARK: Saplings (images)
