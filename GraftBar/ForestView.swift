@@ -1,12 +1,12 @@
 import SwiftUI
 import GraftCore
 
-/// The Fleet section — a live "canopy" view of an Orchard tree: the trunk (controller),
+/// The Forest section — a live "canopy" view of an Orchard tree: the trunk (controller),
 /// its branches (worker Macs) and their leaf capacity, and the leaves (VMs) graft owns on
 /// the cluster. Queries the Orchard controller directly (independent of whether graft's own
 /// supervisor is running locally), refreshing every few seconds. Only meaningful for Orchard
 /// profiles — local-Tart profiles get a friendly nudge to the Dashboard instead.
-struct FleetView: View {
+struct ForestView: View {
     @ObservedObject var config: ConfigStore
 
     @State private var report: OrchardProvider.FleetReport?
