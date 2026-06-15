@@ -146,6 +146,71 @@ final class ConfigStore: ObservableObject {
         }
     }
 
+    // MARK: Nests (dev boxes)
+
+    /// Dev boxes — Tart VMs named `graft-dev-*`. Mirrors `graft nest ls`. Off-main (shells
+    /// `tart list`). Each carries its name + state (running/stopped).
+    func nests() async -> [TartVM] {
+        await Task.detached(priority: .userInitiated) { () -> [TartVM] in
+            guard let tart = Self.tartPath else { return [] }
+            let out = Self.capture(tart, ["list", "--format", "json"])
+            guard let data = out.data(using: .utf8),
+                  let vms = try? JSONDecoder().decode([TartVM].self, from: data) else { return [] }
+            return vms.filter { $0.name.hasPrefix("graft-dev-") }.sorted { $0.name < $1.name }
+        }.value
+    }
+
+    /// Stop a running nest (best-effort).
+    func stopNest(_ name: String) async {
+        await Task.detached { if let tart = Self.tartPath { _ = Self.capture(tart, ["stop", name]) } }.value
+    }
+
+    /// Remove a nest — stop then delete (mirrors `graft nest rm`).
+    func removeNest(_ name: String) async {
+        await Task.detached {
+            guard let tart = Self.tartPath else { return }
+            _ = Self.capture(tart, ["stop", name])
+            _ = Self.capture(tart, ["delete", name])
+        }.value
+    }
+
+    /// Whether the `graft` CLI is available — needed to open/create nests (it owns the
+    /// boot + Remote-SSH dance). List/stop/remove work without it (pure `tart`).
+    var graftAvailable: Bool { Self.graftPath != nil }
+
+    /// Open a nest in VS Code over Remote-SSH: `graft nest <short> --code`. Detached — graft
+    /// boots the box if needed, waits for the guest, then launches VS Code.
+    func openNestInCode(short: String) {
+        Self.launchGraft(["nest", short, "--code"])
+    }
+
+    /// Create a new nest from a repo/URL (clone) and open VS Code. An explicit image keeps it
+    /// non-interactive (no image picker prompt in a detached run).
+    func newNest(target: String, image: String?) {
+        var args = ["nest", target]
+        if let image, !image.isEmpty { args += ["--image", image] }
+        args.append("--code")
+        Self.launchGraft(args)
+    }
+
+    nonisolated private static let graftPath: String? =
+        ["/opt/homebrew/bin/graft", "/usr/local/bin/graft"].first { FileManager.default.isExecutableFile(atPath: $0) }
+
+    /// Fire-and-forget a `graft` subcommand (detached; we don't wait). Used for the
+    /// long-running, self-contained nest open/create flows.
+    nonisolated private static func launchGraft(_ args: [String]) {
+        guard let graft = graftPath else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: graft)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        p.environment = env
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+    }
+
     nonisolated private static let tartPath: String? =
         ["/opt/homebrew/bin/tart", "/usr/local/bin/tart"].first { FileManager.default.isExecutableFile(atPath: $0) }
 
