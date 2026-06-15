@@ -177,6 +177,12 @@ struct PoolEditorSheet: View {
         !draft.image.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    /// The image dropdown is a chooser, not a value: it always shows "Pick local…" and
+    /// injects the selection into the (free-text) image field.
+    private var imagePick: Binding<String> {
+        Binding(get: { "" }, set: { if !$0.isEmpty { draft.image = $0 } })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(draft.index == nil ? "Add pool" : "Edit pool").font(.headline).padding(16)
@@ -187,15 +193,12 @@ struct PoolEditorSheet: View {
                     HStack(spacing: 6) {
                         TextField("", text: $draft.image, prompt: Text("ghcr.io/cirruslabs/macos-tahoe-xcode:latest"))
                         if !images.isEmpty {
-                            Menu {
-                                ForEach(images, id: \.self) { img in
-                                    Button(img) { draft.image = img }
-                                }
-                            } label: {
-                                Image(systemName: "chevron.down")
+                            Picker("Local images", selection: imagePick) {
+                                Text("Pick local…").tag("")
+                                Divider()
+                                ForEach(images, id: \.self) { Text($0).tag($0) }
                             }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
+                            .labelsHidden()
                             .fixedSize()
                             .help("Pick a local image")
                         }
