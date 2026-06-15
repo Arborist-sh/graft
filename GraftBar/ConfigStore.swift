@@ -231,7 +231,9 @@ final class ConfigStore: ObservableObject {
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        // Include VS Code's bundled `code` so `graft nest --code` works even if the user
+        // never ran "Install 'code' command in PATH".
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
         p.environment = env
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice

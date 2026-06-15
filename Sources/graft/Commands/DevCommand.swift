@@ -115,6 +115,9 @@ extension Dev {
             func mark(_ phase: NestStatus.Phase, _ detail: String) {
                 NestStatusStore.write(NestStatus(phase: phase, detail: detail), for: vmName)
             }
+            // Once the box is provisioned it's usable (Shell works) even if the *connect*
+            // step (VS Code) fails — so a post-ready error must not flip it to "failed".
+            var reachedReady = false
 
             do {
             // 4) Create the box from an image if it doesn't exist, then boot it.
@@ -168,6 +171,7 @@ extension Dev {
             }
 
             mark(.ready, "ready")
+            reachedReady = true
 
             // 7) Connect. VS Code can't tear down on close, so code mode is always persistent;
             // shell mode tears down ephemeral (mount/scratch/--ephemeral) boxes on exit.
@@ -187,7 +191,7 @@ extension Dev {
                 name: vmName, command: Self.shell(cd: cd, run: command), interactive: command.isEmpty)
             try await Self.finish(source: source, ephemeralFlag: ephemeral, vmName: vmName, exit: exit)
             } catch {
-                mark(.failed, "\(error)")
+                if !reachedReady { mark(.failed, "\(error)") }
                 throw error
             }
         }

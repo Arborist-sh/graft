@@ -14,8 +14,11 @@ struct NestsView: View {
     @State private var creating = false
     @State private var pendingRemove: String?
     @State private var note: String?
+    /// Poll fast (1s) for a window after an action even before the box shows up in `tart list`.
+    @State private var fastUntil: Date?
+    @State private var ticks = 0
 
-    private let refresh = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,11 +27,17 @@ struct NestsView: View {
             content
         }
         .onAppear { reload() }
-        .onReceive(refresh) { _ in reload(silent: true) }
+        .onReceive(tick) { _ in
+            ticks += 1
+            // 1s while something's actively happening (provisioning, or just after an
+            // action); back off to ~5s when everything's idle.
+            if isBusy || ticks % 5 == 0 { reload(silent: true) }
+        }
         .sheet(isPresented: $creating) {
             NewNestSheet(config: config) { target, image in
                 config.newNest(target: target, image: image)
                 note = "Creating “\(target)” — VS Code will open when it's ready."
+                fastUntil = Date().addingTimeInterval(180)
                 reload(silent: true)
             }
         }
@@ -116,20 +125,29 @@ struct NestsView: View {
         .padding(.vertical, 4)
     }
 
-    /// Combine Tart's coarse running/stopped with graft's provisioning status into one line.
+    /// Combine graft's provisioning status with Tart's coarse running/stopped. Active phases
+    /// win over Tart's state — while creating/booting the VM is "stopped" to Tart but very
+    /// much in progress.
     private func state(_ nest: TartVM) -> (text: String, color: Color, busy: Bool) {
         let running = nest.state.lowercased() == "running"
-        let status = config.nestStatus(nest.name)
-        if status?.phase == .failed {
-            return ("failed — \(status?.detail ?? "")", .red, false)
-        }
-        guard running else { return ("stopped", .secondary.opacity(0.5), false) }
-        switch status?.phase {
+        switch config.nestStatus(nest.name)?.phase {
         case .creating:     return ("creating image…", .orange, true)
         case .booting:      return ("booting…", .orange, true)
-        case .provisioning: return (status?.detail ?? "provisioning…", .orange, true)
-        case .ready, .none: return ("ready", .green, false)
-        case .failed:       return ("failed", .red, false)
+        case .provisioning: return (config.nestStatus(nest.name)?.detail ?? "provisioning…", .orange, true)
+        case .failed:       return ("failed — \(config.nestStatus(nest.name)?.detail ?? "")", .red, false)
+        case .ready:        return running ? ("ready", .green, false) : ("stopped", .secondary.opacity(0.5), false)
+        case .none:         return running ? ("running", .green, false) : ("stopped", .secondary.opacity(0.5), false)
+        }
+    }
+
+    /// True while any nest is mid-provision, or within the fast-poll window after an action.
+    private var isBusy: Bool {
+        if let until = fastUntil, Date() < until { return true }
+        return nests.contains { nest in
+            switch config.nestStatus(nest.name)?.phase {
+            case .creating, .booting, .provisioning: return true
+            default: return false
+            }
         }
     }
 
@@ -166,6 +184,7 @@ struct NestsView: View {
         config.openNestInCode(short: short(nest.name))
         let msg = "Opening “\(short(nest.name))” in VS Code — it'll connect once the box is ready."
         note = msg
+        fastUntil = Date().addingTimeInterval(180)
         // Fire-and-forget launch; clear the transient note after a bit so it doesn't stick.
         Task { try? await Task.sleep(nanoseconds: 8_000_000_000); if note == msg { note = nil } }
     }
