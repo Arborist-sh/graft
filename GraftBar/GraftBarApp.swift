@@ -9,12 +9,13 @@ struct GraftBarApp: App {
     @StateObject private var controller = GraftController()
 
     var body: some Scene {
-        // The main window — graft's dashboard. Single window (reopen from the Dock or
-        // Window menu); shares the controller with the menu-bar extra below.
+        // The main window — a sidebar app (Dashboard + config sections). Single window
+        // (reopen from the Dock or Window menu); shares the controller with the menu-bar
+        // extra below.
         Window("Graft", id: "dashboard") {
-            DashboardView(controller: controller)
+            RootView(controller: controller)
         }
-        .defaultSize(width: 780, height: 480)
+        .defaultSize(width: 860, height: 520)
 
         // Quick controls without leaving whatever you're doing.
         MenuBarExtra {

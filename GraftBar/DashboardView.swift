@@ -24,7 +24,6 @@ struct DashboardView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 620, minHeight: 360)
         .onReceive(ticker) { now = $0 }
     }
 
