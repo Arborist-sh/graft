@@ -117,6 +117,8 @@ struct NestsView: View {
                               : "Boot the box in a Tart window (its macOS screen)")
             if running {
                 Button("Stop") { stop(nest.name) }
+            } else {
+                Button("Start") { start(nest.name) }
             }
             Button(role: .destructive) { pendingRemove = nest.name } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
@@ -191,6 +193,12 @@ struct NestsView: View {
 
     private func openShell(_ nest: TartVM) {
         config.openNestInTerminal(short: short(nest.name))
+    }
+
+    private func start(_ name: String) {
+        config.startNest(name: name)
+        fastUntil = Date().addingTimeInterval(60)
+        reload(silent: true)
     }
 
     private func stop(_ name: String) {

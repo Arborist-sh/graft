@@ -165,6 +165,10 @@ final class ConfigStore: ObservableObject {
         await Task.detached { if let tart = Self.tartPath { _ = Self.capture(tart, ["stop", name]) } }.value
     }
 
+    /// Boot a stopped nest headless (`tart run --no-graphics`, detached) — bring it up
+    /// without a window so you can VS Code / Shell into it. Use "Open window" for a screen.
+    func startNest(name: String) { Self.launchDetached(Self.tartPath, ["run", name, "--no-graphics"]) }
+
     /// Remove a nest — stop then delete (mirrors `graft nest rm`), and drop its status file.
     func removeNest(_ name: String) async {
         await Task.detached {
