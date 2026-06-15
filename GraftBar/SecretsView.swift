@@ -12,6 +12,7 @@ struct SecretsView: View {
 
     @State private var appIDs: [Int] = []
     @State private var importing = false
+    @State private var creatingApp = false
     @State private var settingToken = false
     @State private var pendingRemove: Int?
     @State private var status: String?
@@ -47,6 +48,9 @@ struct SecretsView: View {
         .sheet(isPresented: $importing) {
             ImportKeySheet { id, pem in importKey(id: id, pem: pem) }
         }
+        .sheet(isPresented: $creatingApp) {
+            CreateAppSheet { id in status = "Created App \(id) — its key is stored."; refresh() }
+        }
         .sheet(isPresented: $settingToken) {
             if let account = orchardAccount {
                 SetTokenSheet(account: account) { token in setToken(token, account: account) }
@@ -69,10 +73,11 @@ struct SecretsView: View {
             HStack {
                 Label("GitHub App keys", systemImage: "key").font(.headline)
                 Spacer()
+                Button { creatingApp = true } label: { Label("Create App…", systemImage: "sparkles") }
                 Button { importing = true } label: { Label("Import key…", systemImage: "plus") }
             }
             if appIDs.isEmpty {
-                Text("No GitHub App private keys stored. Import one to authenticate runners.")
+                Text("No GitHub App private keys stored. Create a new App, or import an existing key.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
                 ForEach(appIDs, id: \.self) { id in
@@ -196,6 +201,101 @@ struct ImportKeySheet: View {
         if panel.runModal() == .OK, let url = panel.url, let text = try? String(contentsOf: url, encoding: .utf8) {
             pem = text
         }
+    }
+}
+
+/// Create a brand-new GitHub App via the manifest flow. Opens the browser to GitHub's
+/// one-click create page (pre-filled with the permissions runners need), catches the
+/// redirect on a loopback server, and stores the returned private key in the Keychain —
+/// no manual App ID copy, no .pem download. The user's only manual steps are clicking
+/// "Create" and (after) "Install" on github.com.
+struct CreateAppSheet: View {
+    /// Called with the new App's ID once it's created and its key stored. Lets the caller
+    /// refresh its key list and/or select the new App.
+    let onCreated: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var useOrg = false
+    @State private var org = ""
+    @State private var name = ""
+    @State private var running = false
+    @State private var status: String?
+    @State private var created: AppManifestFlow.Created?
+
+    private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+    private var orgValid: Bool { !useOrg || !org.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Create GitHub App").font(.headline).padding(16)
+            Divider()
+            Form {
+                Section {
+                    Picker("Create under", selection: $useOrg) {
+                        Text("Your account").tag(false)
+                        Text("Organization").tag(true)
+                    }
+                    if useOrg {
+                        TextField("Organization", text: $org, prompt: Text("org login (you must be an owner)"))
+                    }
+                    TextField("App name", text: $name, prompt: Text("optional · must be globally unique"))
+                } footer: {
+                    Text("graft pre-fills the permissions runners need and turns webhooks off. You'll click “Create GitHub App” in your browser, then install it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let status {
+                    Section { Text(status).font(.callout) }
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                if running { ProgressView().controlSize(.small); Text("Waiting for GitHub…").font(.caption).foregroundStyle(.secondary) }
+                Spacer()
+                if created != nil {
+                    Button("Install App…") { openInstall() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Done") { finish() }
+                } else {
+                    Button("Cancel") { dismiss() }
+                    Button("Create") { create() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(running || !orgValid)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 460)
+    }
+
+    private func create() {
+        running = true
+        status = "Opening your browser — click “Create GitHub App”, then return here."
+        let account: AppManifestFlow.Account =
+            useOrg ? .org(org.trimmingCharacters(in: .whitespaces)) : .user
+        let appName = name.trimmingCharacters(in: .whitespaces)
+        Task {
+            do {
+                let result = try await AppManifestFlow.run(account: account, name: appName.isEmpty ? nil : appName) { url in
+                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                }
+                try store.store(pem: result.pem, forAppID: result.appID)
+                created = result
+                status = "✓ Created “\(result.name)” (App \(result.appID)) and stored its key. Now install it."
+            } catch {
+                status = "Failed: \(error.localizedDescription)"
+            }
+            running = false
+        }
+    }
+
+    private func openInstall() {
+        if let c = created, let url = URL(string: c.installURL) { NSWorkspace.shared.open(url) }
+    }
+
+    private func finish() {
+        if let c = created { onCreated(c.appID) }
+        dismiss()
     }
 }
 

@@ -8,7 +8,7 @@ struct Secrets: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "secrets",
         abstract: "Manage GitHub App private keys in the macOS Keychain.",
-        subcommands: [Import.self, List.self, Remove.self]
+        subcommands: [CreateApp.self, Import.self, List.self, Remove.self]
     )
 }
 
@@ -22,6 +22,62 @@ struct KeychainScopeOptions: ParsableArguments {
 }
 
 extension Secrets {
+    /// Create a brand-new GitHub App via the manifest flow — opens the browser, you click
+    /// "Create GitHub App", and graft receives the App ID + private key automatically and
+    /// stores the key in the Keychain. No copy-pasting the ID, no downloading the .pem.
+    struct CreateApp: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "create-app",
+            abstract: "Create a new GitHub App in your browser; store its key automatically."
+        )
+
+        @Option(name: .long, help: "Create it under an organization (you must be an org owner) instead of your account.")
+        var org: String?
+
+        @Option(name: .long, help: "Desired App name (globally unique). Omit to name it on GitHub.")
+        var name: String?
+
+        @Option(name: .long, help: "Also set this profile's GitHub App ID to the new App.")
+        var profile: String?
+
+        @OptionGroup var keychain: KeychainScopeOptions
+
+        func run() async throws {
+            let account: AppManifestFlow.Account = org.map { .org($0) } ?? .user
+            printErr("Opening your browser — click “Create GitHub App” on GitHub, then come back here…")
+
+            let created = try await AppManifestFlow.run(account: account, name: name) { url in
+                Self.open(url)
+            }
+
+            try keychain.store.store(pem: created.pem, forAppID: created.appID)
+            printErr("✓ created App “\(created.name)” (id \(created.appID)); key stored in the \(keychain.scope.rawValue) keychain")
+
+            if let profile {
+                var cfg = try Profiles.load(profile)
+                cfg.github = GitHubConfig(
+                    appId: created.appID,
+                    target: cfg.github?.target ?? "",
+                    runnerGroupId: cfg.github?.runnerGroupId ?? 1
+                )
+                try Profiles.save(cfg, as: profile)
+                printErr("✓ set profile “\(profile)” App ID to \(created.appID)")
+            }
+
+            printErr("→ last step — install the App on your org/repo:")
+            printErr("  \(created.installURL)")
+            Self.open(URL(string: created.installURL)!)
+        }
+
+        /// Open a URL in the default browser via `open(1)` (no AppKit dependency in the CLI).
+        static func open(_ url: URL) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = [url.absoluteString]
+            try? p.run()
+        }
+    }
+
     struct Import: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Import an App private-key PEM into the Keychain (then shred the file)."

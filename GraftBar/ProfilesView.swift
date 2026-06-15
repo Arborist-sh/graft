@@ -170,6 +170,7 @@ struct ProfileSettingsSheet: View {
     @State private var targetsLoading = false
     /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
     @State private var targetsReached = true
+    @State private var creatingApp = false
 
     private var valid: Bool {
         guard orchard else { return true }
@@ -199,16 +200,16 @@ struct ProfileSettingsSheet: View {
                         HStack(spacing: 6) {
                             TextField("", text: $appID, prompt: Text("e.g. 4021920"))
                                 .onSubmit { reloadTargets() }
-                            if !appIDs.isEmpty {
-                                Menu("") {
-                                    ForEach(appIDs, id: \.self) { id in
-                                        Button("App \(id)") { appID = String(id); reloadTargets() }
-                                    }
+                            Menu("") {
+                                ForEach(appIDs, id: \.self) { id in
+                                    Button("App \(id)") { appID = String(id); reloadTargets() }
                                 }
-                                .menuStyle(.borderlessButton)
-                                .fixedSize()
-                                .help("Apps with a private key in your Keychain")
+                                if !appIDs.isEmpty { Divider() }
+                                Button { creatingApp = true } label: { Label("Create new App…", systemImage: "sparkles") }
                             }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .help("Keychain Apps, or create a new one")
                         }
                     }
                     LabeledContent("Target") {
@@ -254,6 +255,13 @@ struct ProfileSettingsSheet: View {
         }
         .frame(width: 460, height: 520)
         .onAppear(perform: load)
+        .sheet(isPresented: $creatingApp) {
+            CreateAppSheet { id in
+                appID = String(id)
+                appIDs = config.storedAppIDs()
+                reloadTargets()
+            }
+        }
     }
 
     private func load() {
