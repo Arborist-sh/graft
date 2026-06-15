@@ -34,8 +34,10 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(AppSection.allCases, selection: $section) { item in
-                Label(item.title, systemImage: item.symbol)
+            List(selection: $section) {
+                ForEach(AppSection.allCases) { item in
+                    Label(item.title, systemImage: item.symbol).tag(item)
+                }
             }
             .navigationSplitViewColumnWidth(min: 168, ideal: 188, max: 240)
             .navigationTitle("Graft")
