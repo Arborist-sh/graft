@@ -195,6 +195,7 @@ struct PoolEditorSheet: View {
                                 Image(systemName: "chevron.down")
                             }
                             .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
                             .fixedSize()
                             .help("Pick a local image")
                         }
