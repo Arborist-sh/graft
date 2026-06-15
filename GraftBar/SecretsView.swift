@@ -388,7 +388,9 @@ struct CreateAppSheet: View {
                     status = "✓ Installed on \(where_)."
                     return
                 }
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                // 1s poll — at most ~300 hits over the 5-min window, trivial against the
+                // App JWT's ~5k/hr budget; makes the "installed" flip feel instant.
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
             awaitingInstall = false
         }
