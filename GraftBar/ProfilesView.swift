@@ -174,6 +174,8 @@ struct ProfileSettingsSheet: View {
     /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
     @State private var targetsReached = true
     @State private var creatingApp = false
+    @State private var settingToken = false
+    @State private var tokenPresent = false
 
     private var valid: Bool {
         guard orchard else { return true }
@@ -195,7 +197,25 @@ struct ProfileSettingsSheet: View {
                     if orchard {
                         TextField("Controller URL", text: $controllerURL, prompt: Text("http://trunk.local:6120"))
                         TextField("Service account", text: $serviceAccount, prompt: Text("graft"))
+                            .onChange(of: serviceAccount) { refreshTokenPresence() }
                         TextField("Max VMs", text: $maxVMs, prompt: Text("optional · default 100"))
+                        if !serviceAccount.trimmingCharacters(in: .whitespaces).isEmpty {
+                            LabeledContent("Token") {
+                                HStack(spacing: 8) {
+                                    Image(systemName: tokenPresent ? "checkmark.seal.fill" : "xmark.seal")
+                                        .foregroundStyle(tokenPresent ? Color.green : .secondary)
+                                    Text(tokenPresent ? "stored" : "not set").foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button(tokenPresent ? "Replace…" : "Set token…") { settingToken = true }
+                                    if tokenPresent {
+                                        Button(role: .destructive) { clearToken() } label: { Image(systemName: "trash") }
+                                            .buttonStyle(.borderless)
+                                    }
+                                }
+                            }
+                            Text("The service-account token (from your Orchard admin) is kept in the Keychain for “\(serviceAccount.trimmingCharacters(in: .whitespaces))”, not in the profile file.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Section("GitHub") {
@@ -273,6 +293,11 @@ struct ProfileSettingsSheet: View {
                 reloadTargets()
             }
         }
+        .sheet(isPresented: $settingToken) {
+            SetTokenSheet(account: serviceAccount.trimmingCharacters(in: .whitespaces)) { token in
+                setToken(token)
+            }
+        }
     }
 
     private func load() {
@@ -291,6 +316,30 @@ struct ProfileSettingsSheet: View {
         }
         apps = config.storedApps()
         reloadTargets()
+        refreshTokenPresence()
+    }
+
+    // MARK: Orchard token (kept in the Keychain, keyed by service account)
+
+    private var tokenStore: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+
+    private func refreshTokenPresence() {
+        let account = serviceAccount.trimmingCharacters(in: .whitespaces)
+        tokenPresent = !account.isEmpty && tokenStore.hasOrchardToken(account: account)
+    }
+
+    private func setToken(_ token: String) {
+        let account = serviceAccount.trimmingCharacters(in: .whitespaces)
+        guard !account.isEmpty else { return }
+        try? tokenStore.storeOrchardToken(token, account: account)
+        refreshTokenPresence()
+    }
+
+    private func clearToken() {
+        let account = serviceAccount.trimmingCharacters(in: .whitespaces)
+        guard !account.isEmpty else { return }
+        try? tokenStore.removeOrchardToken(account: account)
+        refreshTokenPresence()
     }
 
     /// Refresh the target dropdown for the current App ID (network, off the main actor via

@@ -167,6 +167,21 @@ public struct KeychainSecretStore: SecretStore {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Whether an Orchard token is stored for this account — an attribute-only existence
+    /// check, so it never prompts (unlike `orchardToken`, which reads the secret data).
+    public func hasOrchardToken(account: String) -> Bool {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        applySearchScope(to: &query)
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+    }
+
     /// Upsert the Orchard token for a service account (idempotent: delete then add).
     public func storeOrchardToken(_ token: String, account: String) throws {
         try removeOrchardToken(account: account)

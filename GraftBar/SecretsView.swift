@@ -15,16 +15,10 @@ struct SecretsView: View {
     @State private var importing = false
     @State private var creatingApp = false
     @State private var fetchingNames = false
-    @State private var settingToken = false
     @State private var pendingRemove: Int?
     @State private var status: String?
 
     private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
-
-    /// The Orchard service account for the selected profile, if it's an Orchard profile.
-    private var orchardAccount: String? {
-        config.selected.flatMap { config.config($0)?.orchard?.serviceAccount }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,7 +33,6 @@ struct SecretsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     githubKeys
-                    if let account = orchardAccount { orchardToken(account: account) }
                     if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
                 }
                 .padding(16)
@@ -52,11 +45,6 @@ struct SecretsView: View {
         }
         .sheet(isPresented: $creatingApp) {
             CreateAppSheet { id in status = "Created App \(id) — its key is stored."; refresh() }
-        }
-        .sheet(isPresented: $settingToken) {
-            if let account = orchardAccount {
-                SetTokenSheet(account: account) { token in setToken(token, account: account) }
-            }
         }
         .confirmationDialog(
             "Remove the key for App \(String(pendingRemove ?? 0))?",
@@ -109,30 +97,6 @@ struct SecretsView: View {
         }
     }
 
-    // MARK: Orchard token
-
-    private func orchardToken(account: String) -> some View {
-        let present = store.orchardToken(account: account) != nil
-        return VStack(alignment: .leading, spacing: 8) {
-            Label("Orchard token", systemImage: "lock").font(.headline)
-            HStack {
-                Image(systemName: present ? "checkmark.seal.fill" : "xmark.seal")
-                    .foregroundStyle(present ? Color.green : Color.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("service account: \(account)").font(.body.weight(.medium))
-                    Text(present ? "token stored" : "no token set")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(present ? "Replace…" : "Set token…") { settingToken = true }
-                if present {
-                    Button(role: .destructive) { clearToken(account: account) } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                }
-            }
-        }
-    }
-
     // MARK: Actions
 
     private func refresh() {
@@ -166,16 +130,6 @@ struct SecretsView: View {
     private func removeKey(_ id: Int) {
         do { try store.remove(appID: id); status = "Removed key for App \(id)."; refresh() }
         catch { status = "Couldn't remove key: \(error.localizedDescription)" }
-    }
-
-    private func setToken(_ token: String, account: String) {
-        do { try store.storeOrchardToken(token, account: account); status = "Saved Orchard token." }
-        catch { status = "Couldn't save token: \(error.localizedDescription)" }
-    }
-
-    private func clearToken(account: String) {
-        do { try store.removeOrchardToken(account: account); status = "Cleared Orchard token." }
-        catch { status = "Couldn't clear token: \(error.localizedDescription)" }
     }
 }
 
