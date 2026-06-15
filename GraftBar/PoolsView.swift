@@ -8,7 +8,6 @@ struct PoolsView: View {
     @ObservedObject var config: ConfigStore
     @State private var cfg: GraftConfig?
     @State private var draft: PoolDraft?
-    @State private var images: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,9 +17,8 @@ struct PoolsView: View {
         }
         .onAppear(perform: load)
         .onChange(of: config.selected) { load() }
-        .task { images = await config.localImages() }
         .sheet(item: $draft) { d in
-            PoolEditorSheet(draft: d, images: images) { apply($0) }
+            PoolEditorSheet(draft: d, config: config) { apply($0) }
         }
     }
 
@@ -168,20 +166,16 @@ struct PoolDraft: Identifiable {
 /// Add / edit a single pool. Operates on a local copy; hands the result back via `onSave`.
 struct PoolEditorSheet: View {
     @State var draft: PoolDraft
-    var images: [String] = []
+    @ObservedObject var config: ConfigStore
     let onSave: (PoolDraft) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var images: [String] = []
 
     private var valid: Bool {
         !draft.name.trimmingCharacters(in: .whitespaces).isEmpty &&
         !draft.image.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    /// The image dropdown is a chooser, not a value: it always shows "Pick local…" and
-    /// injects the selection into the (free-text) image field.
-    private var imagePick: Binding<String> {
-        Binding(get: { "" }, set: { if !$0.isEmpty { draft.image = $0 } })
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -193,12 +187,12 @@ struct PoolEditorSheet: View {
                     HStack(spacing: 6) {
                         TextField("", text: $draft.image, prompt: Text("ghcr.io/cirruslabs/macos-tahoe-xcode:latest"))
                         if !images.isEmpty {
-                            Picker("Local images", selection: imagePick) {
-                                Text("Pick local…").tag("")
-                                Divider()
-                                ForEach(images, id: \.self) { Text($0).tag($0) }
+                            Menu("") {
+                                ForEach(images, id: \.self) { img in
+                                    Button(img) { draft.image = img }
+                                }
                             }
-                            .labelsHidden()
+                            .menuStyle(.borderlessButton)
                             .fixedSize()
                             .help("Pick a local image")
                         }
@@ -225,5 +219,6 @@ struct PoolEditorSheet: View {
             .padding(16)
         }
         .frame(width: 440, height: 480)
+        .task { images = await config.localImages() }
     }
 }
