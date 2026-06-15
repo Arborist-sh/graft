@@ -203,7 +203,7 @@ struct ProfileSettingsSheet: View {
                                     .onSubmit { reloadTargets() }
                                 Menu("") {
                                     ForEach(apps, id: \.id) { app in
-                                        Button(app.name.map { "\($0)  (\(app.id))" } ?? "App \(String(app.id))") {
+                                        Button(app.name.map { "\($0)  (\(String(app.id)))" } ?? "App \(String(app.id))") {
                                             appID = String(app.id); reloadTargets()
                                         }
                                     }
