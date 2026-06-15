@@ -184,6 +184,20 @@ final class ConfigStore: ObservableObject {
     /// window to one already running headless under graft.
     func openNestWindow(name: String) { Self.launchDetached(Self.tartPath, ["run", name]) }
 
+    /// Open an interactive shell into a nest in a new terminal window (`graft nest <short>`).
+    /// Needs a real TTY, so it runs in Terminal (or iTerm, if installed) rather than a
+    /// detached background process. No-op if the graft CLI isn't found.
+    func openNestInTerminal(short: String) {
+        guard let graft = Self.graftPath else { return }
+        let cmd = "\(graft) nest \(short)"
+        let iterm = FileManager.default.fileExists(atPath: "/Applications/iTerm.app")
+        let app = iterm ? "iTerm" : "Terminal"
+        let open = iterm
+            ? "tell application \"iTerm\" to create window with default profile command \"\(cmd)\""
+            : "tell application \"Terminal\" to do script \"\(cmd)\""
+        Self.launchDetached("/usr/bin/osascript", ["-e", open, "-e", "tell application \"\(app)\" to activate"])
+    }
+
     /// Whether the `graft` CLI is available — needed to open/create nests (it owns the
     /// boot + Remote-SSH dance). List/stop/remove work without it (pure `tart`).
     var graftAvailable: Bool { Self.graftPath != nil }

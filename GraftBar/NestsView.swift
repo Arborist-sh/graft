@@ -96,10 +96,13 @@ struct NestsView: View {
             }
             Circle().fill(s.color).frame(width: 8, height: 8)
             Spacer()
-            Button("Open in VS Code") { openCode(nest) }
+            Button("VS Code") { openCode(nest) }
                 .disabled(!config.graftAvailable)
                 .help(config.graftAvailable ? "Boot if needed + open VS Code over Remote-SSH" : "Install the graft CLI")
-            Button("Open window") { config.openNestWindow(name: nest.name) }
+            Button("Shell") { openShell(nest) }
+                .disabled(!config.graftAvailable)
+                .help(config.graftAvailable ? "Open an interactive shell in a new Terminal/iTerm window" : "Install the graft CLI")
+            Button("Window") { config.openNestWindow(name: nest.name) }
                 .disabled(running)
                 .help(running ? "Stop the nest first — Tart can't attach a window to a running headless VM"
                               : "Boot the box in a Tart window (its macOS screen)")
@@ -161,7 +164,14 @@ struct NestsView: View {
 
     private func openCode(_ nest: TartVM) {
         config.openNestInCode(short: short(nest.name))
-        note = "Opening “\(short(nest.name))” in VS Code…"
+        let msg = "Opening “\(short(nest.name))” in VS Code — it'll connect once the box is ready."
+        note = msg
+        // Fire-and-forget launch; clear the transient note after a bit so it doesn't stick.
+        Task { try? await Task.sleep(nanoseconds: 8_000_000_000); if note == msg { note = nil } }
+    }
+
+    private func openShell(_ nest: TartVM) {
+        config.openNestInTerminal(short: short(nest.name))
     }
 
     private func stop(_ name: String) {

@@ -7,6 +7,11 @@ public struct LocalTartProvider: VMProvider {
     /// graft-managed VMs apart from anything else on the host.
     public static let namePrefix = "graft-"
 
+    /// Nests (dev boxes) share the `graft-` prefix but are NOT pool runners — they're
+    /// long-lived dev environments. The supervisor must never see them as leaves/orphans,
+    /// so the managed-VM enumeration excludes them.
+    public static let devPrefix = "graft-dev-"
+
     public init() {}
 
     /// Ceiling of VMs of this OS the host can run. macOS is Apple's kernel-enforced
@@ -85,9 +90,10 @@ public struct LocalTartProvider: VMProvider {
         )
     }
 
-    /// VMs graft created on this host (by name prefix). Backs `graft leaf list`.
+    /// VMs graft created on this host as pool runners (by name prefix), excluding nests
+    /// (dev boxes). Backs `graft leaf list` and the orphan sweep.
     public func graftManagedVMs() async throws -> [TartVM] {
-        try await Tart.list().filter { $0.name.hasPrefix(Self.namePrefix) }
+        try await Tart.list().filter { $0.name.hasPrefix(Self.namePrefix) && !$0.name.hasPrefix(Self.devPrefix) }
     }
 
     public func managedVMNames() async -> [String] {
