@@ -220,7 +220,26 @@ final class ConfigStore: ObservableObject {
     /// (the build streams a lot of output and takes a while).
     func growSapling(seedPath: String) {
         guard let graft = Self.graftPath else { return }
-        runInTerminal("\(graft) sapling grow -f '\(seedPath)'; exec $SHELL -il")
+        runInTerminal("\(graft) sapling grow --seed '\(seedPath)'; exec $SHELL -il")
+    }
+
+    // MARK: Seeds (.graft recipes)
+
+    /// A starter `.graft` recipe (`graft sapling template`). Empty if graft isn't found.
+    func seedTemplate() async -> String {
+        await Task.detached { () -> String in
+            guard let graft = Self.graftPath else { return "" }
+            return Self.capture(graft, ["sapling", "template"])
+        }.value
+    }
+
+    /// The provisioning script a seed compiles to (`graft sapling render --seed <path>`),
+    /// or the error output if it doesn't parse — handy as a live preview while editing.
+    func renderSeed(path: String) async -> String {
+        await Task.detached { () -> String in
+            guard let graft = Self.graftPath else { return "graft CLI not found" }
+            return Self.capture(graft, ["sapling", "render", "--seed", path], mergeStderr: true)
+        }.value
     }
 
     /// Pull an image from a registry — `graft sapling pull <ref>` in a terminal (long download).
@@ -274,7 +293,7 @@ final class ConfigStore: ObservableObject {
     nonisolated private static let tartPath: String? =
         ["/opt/homebrew/bin/tart", "/usr/local/bin/tart"].first { FileManager.default.isExecutableFile(atPath: $0) }
 
-    nonisolated private static func capture(_ launchPath: String, _ args: [String]) -> String {
+    nonisolated private static func capture(_ launchPath: String, _ args: [String], mergeStderr: Bool = false) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = args
@@ -283,7 +302,7 @@ final class ConfigStore: ObservableObject {
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
-        p.standardError = Pipe()
+        p.standardError = mergeStderr ? pipe : Pipe()
         do { try p.run() } catch { return "" }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()

@@ -29,6 +29,7 @@ enum Lex {
     static let secrets   = Term(standard: "Secrets",   graft: "Roots")
     static let images    = Term(standard: "Images",    graft: "Saplings")
     static let nests     = Term(standard: "Dev Boxes", graft: "Nests")
+    static let seeds     = Term(standard: "Recipes",   graft: "Seeds")
     static let health    = Term(standard: "Health",    graft: "Sapflow")
     static let hosts     = Term(standard: "Hosts",     graft: "Grounds")
 

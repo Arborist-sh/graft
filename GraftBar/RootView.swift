@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The app's sections — the sidebar items. Dashboard + Canopy + Nests + config today;
-/// Saplings / Seeds / Sapflow slot in here as they're built.
+/// The app's sections — the sidebar items. Dashboard · Canopy · Nests · Saplings · Seeds
+/// + config. Sapflow (health) slots in here next.
 enum AppSection: String, CaseIterable, Identifiable {
-    case dashboard, canopy, nests, saplings, profiles, pools, secrets
+    case dashboard, canopy, nests, saplings, seeds, profiles, pools, secrets
     var id: String { rawValue }
 
     func title(_ vocab: Vocabulary) -> String {
@@ -12,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .canopy:    return Lex.canopy(vocab)
         case .nests:     return Lex.nests(vocab)
         case .saplings:  return Lex.images(vocab)
+        case .seeds:     return Lex.seeds(vocab)
         case .profiles:  return Lex.profiles(vocab)
         case .pools:     return Lex.pools(vocab)
         case .secrets:   return Lex.secrets(vocab)
@@ -24,6 +25,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .canopy:    return "tree"
         case .nests:     return "shippingbox"
         case .saplings:  return "leaf"
+        case .seeds:     return "circle.hexagongrid"
         case .profiles:  return "square.stack.3d.up"
         case .pools:     return "circle.grid.2x2"
         case .secrets:   return "key"
@@ -54,6 +56,7 @@ struct RootView: View {
             case .canopy:    CanopyView(config: config)
             case .nests:     NestsView(config: config)
             case .saplings:  SaplingsView(config: config)
+            case .seeds:     SeedsView(config: config)
             case .profiles:  ProfilesView(config: config, controller: controller)
             case .pools:     PoolsView(config: config)
             case .secrets:   SecretsView(config: config)
