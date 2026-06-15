@@ -415,7 +415,9 @@ struct SetTokenSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Orchard token").font(.headline)
             Text("for service account “\(account)”").font(.caption).foregroundStyle(.secondary)
-            SecureField("token", text: $token).frame(width: 320)
+            SecureField("token", text: $token).frame(width: 360)
+            Text("Ask your Orchard admin to create a `compute:*` service account on the trunk and share its token. graft stores it here — it can't mint one (that needs admin access on the controller host).")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -425,6 +427,6 @@ struct SetTokenSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 420)
     }
 }

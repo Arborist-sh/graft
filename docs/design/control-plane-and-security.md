@@ -249,6 +249,14 @@ mitigated).
   generalized to clients. GUI/CLI account-creation against a *remote* trunk requires the
   operator to already have an admin context *on that trunk* — otherwise they paste a token
   an admin made for them.
+- **The GUI stores tokens; it never mints them.** Minting a service account is an *admin*
+  operation (needs bootstrap-admin) and belongs exclusively to the trunk host's owner —
+  done there via CLI (`graft init` / `orchard create service-account`). The app is an
+  *operator* tool: its only Orchard-credential affordance is "paste the token your admin
+  gave you" (`Set token…`). We deliberately do **not** add a "create on trunk" button —
+  even in the local single-host case where it'd technically work, because that would
+  normalize depending on an on-disk admin token, the exact pattern we're keeping contained.
+  (Capability follows trust: operator tools get operator powers.)
 
 ### 6.4 Per-surface vulnerabilities (what · why · mitigation)
 
