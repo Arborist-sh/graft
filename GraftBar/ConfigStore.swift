@@ -62,6 +62,12 @@ final class ConfigStore: ObservableObject {
     /// True if the profile is configured for an Orchard fleet (vs local Tart).
     func isOrchard(_ name: String) -> Bool { config(name)?.orchard != nil }
 
+    /// Service-account names that already have an Orchard token in the Keychain — offered
+    /// in the profile editor so you can reuse one instead of re-pasting. Prompt-free.
+    func storedOrchardAccounts() -> [String] {
+        (try? KeychainSecretStore(scope: .login).storedOrchardAccounts()) ?? []
+    }
+
     /// Local Tart images you can clone a pool from — `tart list` minus digest-pinned
     /// duplicates and graft's own transient VMs (leaves / dev / build boxes). Mirrors the
     /// CLI's `ImagePicker`. Shelled by full path because a GUI app's PATH is minimal, and

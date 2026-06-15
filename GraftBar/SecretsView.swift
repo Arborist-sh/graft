@@ -370,7 +370,7 @@ struct SetTokenSheet: View {
             Text("Orchard token").font(.headline)
             Text("for service account “\(account)”").font(.caption).foregroundStyle(.secondary)
             SecureField("token", text: $token).frame(width: 360)
-            Text("Ask your Orchard admin to create a `compute:*` service account on the trunk and share its token. graft stores it here — it can't mint one (that needs admin access on the controller host).")
+            Text("Get the account **name** and token from your Orchard admin — put the name in the Service account field, paste the token here. graft can't mint one (that needs admin access on the controller host).")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()

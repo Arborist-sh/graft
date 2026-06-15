@@ -182,6 +182,25 @@ public struct KeychainSecretStore: SecretStore {
         return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
     }
 
+    /// Service-account names that have an Orchard token stored. Attribute-only read, so it
+    /// never prompts — used to offer "reuse a token you already have" in the profile editor.
+    public func storedOrchardAccounts() throws -> [String] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        applySearchScope(to: &query)
+        var items: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &items)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let array = items as? [[String: Any]] else {
+            throw keychainError("list", status)
+        }
+        return array.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
+    }
+
     /// Upsert the Orchard token for a service account (idempotent: delete then add).
     public func storeOrchardToken(_ token: String, account: String) throws {
         try removeOrchardToken(account: account)

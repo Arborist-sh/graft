@@ -176,6 +176,8 @@ struct ProfileSettingsSheet: View {
     @State private var creatingApp = false
     @State private var settingToken = false
     @State private var tokenPresent = false
+    /// Service-account names already holding a token in the Keychain (reuse dropdown).
+    @State private var orchardAccounts: [String] = []
 
     private var valid: Bool {
         guard orchard else { return true }
@@ -196,8 +198,22 @@ struct ProfileSettingsSheet: View {
                     }
                     if orchard {
                         TextField("Controller URL", text: $controllerURL, prompt: Text("http://trunk.local:6120"))
-                        TextField("Service account", text: $serviceAccount, prompt: Text("graft"))
-                            .onChange(of: serviceAccount) { refreshTokenPresence() }
+                        LabeledContent("Service account") {
+                            HStack(spacing: 6) {
+                                TextField("", text: $serviceAccount, prompt: Text("name from your Orchard admin"))
+                                    .onChange(of: serviceAccount) { refreshTokenPresence() }
+                                if !orchardAccounts.isEmpty {
+                                    Menu("") {
+                                        ForEach(orchardAccounts, id: \.self) { acct in
+                                            Button(acct) { serviceAccount = acct; refreshTokenPresence() }
+                                        }
+                                    }
+                                    .menuStyle(.borderlessButton)
+                                    .fixedSize()
+                                    .help("Accounts you already have a token for")
+                                }
+                            }
+                        }
                         TextField("Max VMs", text: $maxVMs, prompt: Text("optional · default 100"))
                         if !serviceAccount.trimmingCharacters(in: .whitespaces).isEmpty {
                             LabeledContent("Token") {
@@ -213,7 +229,7 @@ struct ProfileSettingsSheet: View {
                                     }
                                 }
                             }
-                            Text("The service-account token (from your Orchard admin) is kept in the Keychain for “\(serviceAccount.trimmingCharacters(in: .whitespaces))”, not in the profile file.")
+                            Text("Use the account **name** and token your Orchard admin gave you — name above, token here. Kept in the Keychain for “\(serviceAccount.trimmingCharacters(in: .whitespaces))”, not in the profile file.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -315,6 +331,7 @@ struct ProfileSettingsSheet: View {
             runnerGroup = String(gh.runnerGroupId)
         }
         apps = config.storedApps()
+        orchardAccounts = config.storedOrchardAccounts()
         reloadTargets()
         refreshTokenPresence()
     }
@@ -332,6 +349,7 @@ struct ProfileSettingsSheet: View {
         let account = serviceAccount.trimmingCharacters(in: .whitespaces)
         guard !account.isEmpty else { return }
         try? tokenStore.storeOrchardToken(token, account: account)
+        orchardAccounts = config.storedOrchardAccounts()
         refreshTokenPresence()
     }
 
