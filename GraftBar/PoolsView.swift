@@ -8,6 +8,7 @@ struct PoolsView: View {
     @ObservedObject var config: ConfigStore
     @State private var cfg: GraftConfig?
     @State private var draft: PoolDraft?
+    @State private var images: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,8 +18,9 @@ struct PoolsView: View {
         }
         .onAppear(perform: load)
         .onChange(of: config.selected) { load() }
+        .task { images = await config.localImages() }
         .sheet(item: $draft) { d in
-            PoolEditorSheet(draft: d) { apply($0) }
+            PoolEditorSheet(draft: d, images: images) { apply($0) }
         }
     }
 
@@ -166,6 +168,7 @@ struct PoolDraft: Identifiable {
 /// Add / edit a single pool. Operates on a local copy; hands the result back via `onSave`.
 struct PoolEditorSheet: View {
     @State var draft: PoolDraft
+    var images: [String] = []
     let onSave: (PoolDraft) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -180,7 +183,23 @@ struct PoolEditorSheet: View {
             Divider()
             Form {
                 TextField("Name", text: $draft.name)
-                TextField("Image", text: $draft.image, prompt: Text("ghcr.io/cirruslabs/macos-tahoe-xcode:latest"))
+                LabeledContent("Image") {
+                    HStack(spacing: 6) {
+                        TextField("", text: $draft.image, prompt: Text("ghcr.io/cirruslabs/macos-tahoe-xcode:latest"))
+                        if !images.isEmpty {
+                            Menu {
+                                ForEach(images, id: \.self) { img in
+                                    Button(img) { draft.image = img }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .help("Pick a local image")
+                        }
+                    }
+                }
                 Picker("OS", selection: $draft.os) {
                     Text("macOS").tag(GuestOS.macOS)
                     Text("Linux").tag(GuestOS.linux)
