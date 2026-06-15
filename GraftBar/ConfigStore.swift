@@ -9,12 +9,18 @@ import GraftCore
 final class ConfigStore: ObservableObject {
     @Published var profiles: [String] = []
     @Published var active: String?
+    /// The profile currently being edited in the Pools / Secrets sections (defaults to
+    /// active). Kept here so those sections share one selection.
+    @Published var selected: String?
 
     init() { reload() }
 
     func reload() {
         profiles = Profiles.names().sorted()
         active = Profiles.activeName()
+        if selected == nil || !profiles.contains(selected!) {
+            selected = active ?? profiles.first
+        }
     }
 
     /// The parsed config for a profile, or nil if missing/unreadable (e.g. an old-schema file).

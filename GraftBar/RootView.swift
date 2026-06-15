@@ -45,7 +45,7 @@ struct RootView: View {
             switch section ?? .dashboard {
             case .dashboard: DashboardView(controller: controller)
             case .profiles:  ProfilesView(config: config, controller: controller)
-            case .pools:     ComingSoon(title: "Pools", note: "Edit pools — count, image, labels, sizing — per profile.")
+            case .pools:     PoolsView(config: config)
             case .secrets:   ComingSoon(title: "Secrets", note: "Import your GitHub App key + Orchard token into the Keychain.")
             }
         }
