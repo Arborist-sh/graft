@@ -1,0 +1,225 @@
+import SwiftUI
+import GraftCore
+import AppKit
+
+/// The Secrets section — manage the credentials graft keeps in the macOS Keychain: the
+/// GitHub App private key(s) and (for Orchard profiles) the service-account token. The
+/// *user* supplies the secret (paste or pick a file); this just stores it via
+/// `KeychainSecretStore`. Note: Keychain ACLs bind to the binary's signature, so reading
+/// keys the CLI stored (or vice-versa) may prompt for access once ("Always Allow").
+struct SecretsView: View {
+    @ObservedObject var config: ConfigStore
+
+    @State private var appIDs: [Int] = []
+    @State private var importing = false
+    @State private var settingToken = false
+    @State private var pendingRemove: Int?
+    @State private var status: String?
+
+    private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+
+    /// The Orchard service account for the selected profile, if it's an Orchard profile.
+    private var orchardAccount: String? {
+        config.selected.flatMap { config.config($0)?.orchard?.serviceAccount }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Secrets").font(.title2.weight(.semibold))
+                Spacer()
+                Text("login keychain").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(16)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    githubKeys
+                    if let account = orchardAccount { orchardToken(account: account) }
+                    if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onAppear(perform: refresh)
+        .sheet(isPresented: $importing) {
+            ImportKeySheet { id, pem in importKey(id: id, pem: pem) }
+        }
+        .sheet(isPresented: $settingToken) {
+            if let account = orchardAccount {
+                SetTokenSheet(account: account) { token in setToken(token, account: account) }
+            }
+        }
+        .confirmationDialog(
+            "Remove the key for App \(pendingRemove ?? 0)?",
+            isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) { if let id = pendingRemove { removeKey(id) }; pendingRemove = nil }
+            Button("Cancel", role: .cancel) { pendingRemove = nil }
+        }
+    }
+
+    // MARK: GitHub App keys
+
+    private var githubKeys: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("GitHub App keys", systemImage: "key").font(.headline)
+                Spacer()
+                Button { importing = true } label: { Label("Import key…", systemImage: "plus") }
+            }
+            if appIDs.isEmpty {
+                Text("No GitHub App private keys stored. Import one to authenticate runners.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                ForEach(appIDs, id: \.self) { id in
+                    HStack {
+                        Image(systemName: "key.fill").foregroundStyle(.green)
+                        Text("App \(id)").font(.body.weight(.medium))
+                        Spacer()
+                        Button(role: .destructive) { pendingRemove = id } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                }
+            }
+        }
+    }
+
+    // MARK: Orchard token
+
+    private func orchardToken(account: String) -> some View {
+        let present = store.orchardToken(account: account) != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            Label("Orchard token", systemImage: "lock").font(.headline)
+            HStack {
+                Image(systemName: present ? "checkmark.seal.fill" : "xmark.seal")
+                    .foregroundStyle(present ? Color.green : Color.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("service account: \(account)").font(.body.weight(.medium))
+                    Text(present ? "token stored" : "no token set")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(present ? "Replace…" : "Set token…") { settingToken = true }
+                if present {
+                    Button(role: .destructive) { clearToken(account: account) } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+
+    // MARK: Actions
+
+    private func refresh() {
+        appIDs = ((try? store.storedAppIDs()) ?? []).sorted()
+    }
+
+    private func importKey(id: Int, pem: String) {
+        do {
+            try store.store(pem: pem, forAppID: id)
+            status = "Stored key for App \(id)."
+            refresh()
+        } catch {
+            status = "Couldn't store key: \(error.localizedDescription)"
+        }
+    }
+
+    private func removeKey(_ id: Int) {
+        do { try store.remove(appID: id); status = "Removed key for App \(id)."; refresh() }
+        catch { status = "Couldn't remove key: \(error.localizedDescription)" }
+    }
+
+    private func setToken(_ token: String, account: String) {
+        do { try store.storeOrchardToken(token, account: account); status = "Saved Orchard token." }
+        catch { status = "Couldn't save token: \(error.localizedDescription)" }
+    }
+
+    private func clearToken(account: String) {
+        do { try store.removeOrchardToken(account: account); status = "Cleared Orchard token." }
+        catch { status = "Couldn't clear token: \(error.localizedDescription)" }
+    }
+}
+
+/// Import a GitHub App private key: App ID + the PEM (pasted, or read from a .pem file).
+struct ImportKeySheet: View {
+    let onImport: (Int, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var appIDText = ""
+    @State private var pem = ""
+
+    private var valid: Bool { Int(appIDText.trimmingCharacters(in: .whitespaces)) != nil && !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Import GitHub App key").font(.headline)
+            HStack {
+                Text("App ID").frame(width: 70, alignment: .leading)
+                TextField("e.g. 4021920", text: $appIDText).frame(width: 160)
+            }
+            HStack {
+                Text("Private key").font(.subheadline)
+                Spacer()
+                Button("Choose .pem…") { chooseFile() }
+            }
+            TextEditor(text: $pem)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(height: 160)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
+            Text("Pasted here or read from a file — stored in your login Keychain, never written to disk by graft.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Import") {
+                    if let id = Int(appIDText.trimmingCharacters(in: .whitespaces)) { onImport(id, pem); dismiss() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!valid)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func chooseFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = []
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url, let text = try? String(contentsOf: url, encoding: .utf8) {
+            pem = text
+        }
+    }
+}
+
+/// Set/replace the Orchard service-account token (entered securely).
+struct SetTokenSheet: View {
+    let account: String
+    let onSet: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var token = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Orchard token").font(.headline)
+            Text("for service account “\(account)”").font(.caption).foregroundStyle(.secondary)
+            SecureField("token", text: $token).frame(width: 320)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") { onSet(token); dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+}

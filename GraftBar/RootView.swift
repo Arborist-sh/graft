@@ -46,7 +46,7 @@ struct RootView: View {
             case .dashboard: DashboardView(controller: controller)
             case .profiles:  ProfilesView(config: config, controller: controller)
             case .pools:     PoolsView(config: config)
-            case .secrets:   ComingSoon(title: "Secrets", note: "Import your GitHub App key + Orchard token into the Keychain.")
+            case .secrets:   SecretsView(config: config)
             }
         }
     }
