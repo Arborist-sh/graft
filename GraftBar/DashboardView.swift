@@ -110,19 +110,22 @@ struct DashboardView: View {
     private var content: some View {
         if !controller.graftInstalled {
             emptyState("graft CLI not found",
-                       "Install the graft CLI (brew install briancorbin/tap/graft) to get going.",
-                       symbol: "exclamationmark.triangle")
+                       "Install the graft CLI (brew install briancorbin/tap/graft) to get going.") {
+                symbolIcon("exclamationmark.triangle")
+            }
         } else if !controller.isRunning {
             VStack(spacing: 16) {
                 emptyState("Not running",
-                           "Start to boot this profile's runners.",
-                           symbol: "leaf")
+                           "Start to boot this profile's runners.") {
+                    GraftMark(size: 46, color: .secondary)
+                }
                 if !controller.orphans.isEmpty { orphanBanner.padding(.horizontal, 40) }
             }
         } else if controller.slots.isEmpty {
             emptyState("No leaves yet",
-                       controller.actionNote ?? "Waiting for the supervisor to schedule runners…",
-                       symbol: "hourglass")
+                       controller.actionNote ?? "Waiting for the supervisor to schedule runners…") {
+                symbolIcon("hourglass")
+            }
         } else {
             slotTable
         }
@@ -172,11 +175,9 @@ struct DashboardView: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func emptyState(_ title: String, _ subtitle: String, symbol: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 34))
-                .foregroundStyle(.tertiary)
+    private func emptyState<Icon: View>(_ title: String, _ subtitle: String, @ViewBuilder icon: () -> Icon) -> some View {
+        VStack(spacing: 10) {
+            icon()
             Text(title).font(.headline)
             Text(subtitle)
                 .font(.subheadline)
@@ -187,11 +188,15 @@ struct DashboardView: View {
         .padding()
     }
 
+    private func symbolIcon(_ name: String) -> some View {
+        Image(systemName: name).font(.system(size: 34)).foregroundStyle(.tertiary)
+    }
+
     // MARK: Footer
 
     private var footer: some View {
-        HStack {
-            Image(systemName: "leaf.fill").foregroundStyle(.green).font(.caption2)
+        HStack(spacing: 5) {
+            GraftMark(size: 12, color: .green)
             Text("Graft").font(.caption.weight(.medium))
             Spacer()
             Text(BuildInfo.footer).font(.caption2).foregroundStyle(.tertiary)
