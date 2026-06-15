@@ -174,7 +174,7 @@ struct ProfileSettingsSheet: View {
     /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
     @State private var targetsReached = true
     @State private var creatingApp = false
-    @State private var settingToken = false
+    @State private var addingAccount = false
     @State private var tokenPresent = false
     /// Service-account names already holding a token in the Keychain (reuse dropdown).
     @State private var orchardAccounts: [String] = []
@@ -199,39 +199,31 @@ struct ProfileSettingsSheet: View {
                     if orchard {
                         TextField("Controller URL", text: $controllerURL, prompt: Text("http://trunk.local:6120"))
                         LabeledContent("Service account") {
-                            HStack(spacing: 6) {
-                                TextField("", text: $serviceAccount, prompt: Text("name from your Orchard admin"))
-                                    .onChange(of: serviceAccount) { refreshTokenPresence() }
-                                if !orchardAccounts.isEmpty {
-                                    Menu("") {
-                                        ForEach(orchardAccounts, id: \.self) { acct in
-                                            Button(acct) { serviceAccount = acct; refreshTokenPresence() }
-                                        }
+                            Menu {
+                                ForEach(orchardAccounts, id: \.self) { acct in
+                                    Button { serviceAccount = acct; refreshTokenPresence() } label: {
+                                        if acct == serviceAccount { Label(acct, systemImage: "checkmark") } else { Text(acct) }
                                     }
-                                    .menuStyle(.borderlessButton)
-                                    .fixedSize()
-                                    .help("Accounts you already have a token for")
                                 }
+                                if !orchardAccounts.isEmpty { Divider() }
+                                Button { addingAccount = true } label: { Label("Add account…", systemImage: "plus") }
+                            } label: {
+                                Text(serviceAccount.isEmpty ? "Choose…" : serviceAccount)
+                            }
+                            .fixedSize()
+                        }
+                        if !serviceAccount.trimmingCharacters(in: .whitespaces).isEmpty {
+                            HStack(spacing: 6) {
+                                Image(systemName: tokenPresent ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                    .foregroundStyle(tokenPresent ? Color.green : .orange)
+                                Text(tokenPresent ? "token stored for “\(serviceAccount)”"
+                                                  : "no token for “\(serviceAccount)” — Add account to set it")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                         TextField("Max VMs", text: $maxVMs, prompt: Text("optional · default 100"))
-                        if !serviceAccount.trimmingCharacters(in: .whitespaces).isEmpty {
-                            LabeledContent("Token") {
-                                HStack(spacing: 8) {
-                                    Image(systemName: tokenPresent ? "checkmark.seal.fill" : "xmark.seal")
-                                        .foregroundStyle(tokenPresent ? Color.green : .secondary)
-                                    Text(tokenPresent ? "stored" : "not set").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button(tokenPresent ? "Replace…" : "Set token…") { settingToken = true }
-                                    if tokenPresent {
-                                        Button(role: .destructive) { clearToken() } label: { Image(systemName: "trash") }
-                                            .buttonStyle(.borderless)
-                                    }
-                                }
-                            }
-                            Text("Use the account **name** and token your Orchard admin gave you — name above, token here. Kept in the Keychain for “\(serviceAccount.trimmingCharacters(in: .whitespaces))”, not in the profile file.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                        Text("Pick an account you already have a token for, or **Add account** with the name + token your Orchard admin gave you. The token lives in the Keychain, never the profile file.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Section("GitHub") {
@@ -309,10 +301,8 @@ struct ProfileSettingsSheet: View {
                 reloadTargets()
             }
         }
-        .sheet(isPresented: $settingToken) {
-            SetTokenSheet(account: serviceAccount.trimmingCharacters(in: .whitespaces)) { token in
-                setToken(token)
-            }
+        .sheet(isPresented: $addingAccount) {
+            AddOrchardAccountSheet { name, token in addAccount(name: name, token: token) }
         }
     }
 
@@ -345,18 +335,14 @@ struct ProfileSettingsSheet: View {
         tokenPresent = !account.isEmpty && tokenStore.hasOrchardToken(account: account)
     }
 
-    private func setToken(_ token: String) {
-        let account = serviceAccount.trimmingCharacters(in: .whitespaces)
+    /// Add (or replace) a service account: store its token in the Keychain under `name` and
+    /// select it. Replacing is just re-adding the same name (store is delete-then-add).
+    private func addAccount(name: String, token: String) {
+        let account = name.trimmingCharacters(in: .whitespaces)
         guard !account.isEmpty else { return }
         try? tokenStore.storeOrchardToken(token, account: account)
+        serviceAccount = account
         orchardAccounts = config.storedOrchardAccounts()
-        refreshTokenPresence()
-    }
-
-    private func clearToken() {
-        let account = serviceAccount.trimmingCharacters(in: .whitespaces)
-        guard !account.isEmpty else { return }
-        try? tokenStore.removeOrchardToken(account: account)
         refreshTokenPresence()
     }
 
@@ -398,5 +384,44 @@ struct ProfileSettingsSheet: View {
             c.github = nil
         }
         config.save(c, as: name)
+    }
+}
+
+/// Add (or replace) an Orchard service account: the **name** and **token** your Orchard
+/// admin gave you, captured together (a new account is meaningless without both). The
+/// token goes to the Keychain keyed by the name; graft never mints accounts (§ control-plane
+/// design doc) — it only stores what the admin issued.
+struct AddOrchardAccountSheet: View {
+    let onAdd: (_ name: String, _ token: String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name = ""
+    @State private var token = ""
+
+    private var valid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add service account").font(.headline)
+            Text("Both come from your Orchard admin — the account they created on the trunk, and its token.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField("Account name", text: $name, prompt: Text("e.g. graft"))
+                SecureField("Token", text: $token)
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Add") { onAdd(name, token); dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!valid)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }

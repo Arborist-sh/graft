@@ -357,30 +357,3 @@ struct CreateAppSheet: View {
         dismiss()
     }
 }
-
-/// Set/replace the Orchard service-account token (entered securely).
-struct SetTokenSheet: View {
-    let account: String
-    let onSet: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var token = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Orchard token").font(.headline)
-            Text("for service account “\(account)”").font(.caption).foregroundStyle(.secondary)
-            SecureField("token", text: $token).frame(width: 360)
-            Text("Get the account **name** and token from your Orchard admin — put the name in the Service account field, paste the token here. graft can't mint one (that needs admin access on the controller host).")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") { onSet(token); dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 420)
-    }
-}
