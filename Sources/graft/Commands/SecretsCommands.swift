@@ -131,16 +131,27 @@ extension Secrets {
             abstract: "Resolve + store display names for stored keys from GitHub."
         )
 
+        @Flag(name: .long, help: "Re-resolve every key (even named ones) and report what GitHub returns.")
+        var force = false
+
         @OptionGroup var keychain: KeychainScopeOptions
 
         func run() async throws {
             let apps = try keychain.store.storedApps()
             guard !apps.isEmpty else { printErr("no keys in the \(keychain.scope.rawValue) keychain"); return }
-            for app in apps where app.name == nil {
+            for app in apps where force || app.name == nil {
                 do {
                     let info = try await GitHubAppClient(appID: app.id, secrets: keychain.store).appInfo()
-                    try await keychain.store.setName(info.name, forAppID: app.id)
-                    printErr("✓ \(app.id) → \(info.name)")
+                    if info.id == app.id {
+                        try await keychain.store.setName(info.name, forAppID: app.id)
+                        printErr("✓ \(app.id) → “\(info.name)”")
+                    } else {
+                        // The key under this ID belongs to a different App — don't stamp a
+                        // misleading name; clear any stale one and tell the user to fix it.
+                        try await keychain.store.setName(nil, forAppID: app.id)
+                        printErr("⚠️ key stored under \(app.id) actually belongs to App \(info.id) (“\(info.name)”).")
+                        printErr("   It's a wrong/duplicate import — remove it: graft secrets rm --app-id \(app.id)")
+                    }
                 } catch {
                     printErr("✗ \(app.id): \(error)")
                 }

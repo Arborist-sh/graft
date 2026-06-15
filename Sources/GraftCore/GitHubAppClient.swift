@@ -127,6 +127,42 @@ public struct GitHubAppClient: Sendable {
         return try Self.snakeDecoder.decode(AppInfo.self, from: data)
     }
 
+    /// Look up a GitHub App by its URL slug — the **public** `GET /apps/{slug}` endpoint,
+    /// no auth or key needed. Lets graft resolve the App ID + name from a downloaded key
+    /// file (named `‹slug›.‹date›.private-key.pem`) so importing doesn't mean typing them.
+    public static func publicAppInfo(
+        slug: String,
+        apiBase: URL = URL(string: "https://api.github.com")!
+    ) async throws -> AppInfo {
+        guard let url = URL(string: apiBase.absoluteString + "/apps/\(slug)") else {
+            throw GraftError("bad app slug: \(slug)")
+        }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        req.setValue("graft", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw GraftError("couldn't look up App “\(slug)” on GitHub")
+        }
+        return try snakeDecoder.decode(AppInfo.self, from: data)
+    }
+
+    /// One installation of this App, with the account it's installed on.
+    public struct Installation: Sendable, Decodable {
+        public let id: Int
+        public let account: Account
+        public struct Account: Sendable, Decodable { public let login: String }
+    }
+
+    /// Every account this App is currently installed on. Empty for a brand-new App until
+    /// the user installs it — which is how the create flow detects "installation done".
+    public func installations() async throws -> [Installation] {
+        let jwt = try await appJWT()
+        let data = try await request("GET", path: "app/installations?per_page=100", bearer: jwt)
+        return try Self.snakeDecoder.decode([Installation].self, from: data)
+    }
+
     /// Targets this App can actually reach: `org:<login>` for every org the App is
     /// installed on, plus `repo:<owner>/<name>` for every accessible repo. Powers the
     /// setup wizard's target picker so you select a valid target instead of retyping.

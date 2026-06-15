@@ -82,22 +82,29 @@ final class ConfigStore: ObservableObject {
         storedApps().first { $0.id == id }?.name
     }
 
-    /// Backfill display names from GitHub for any stored key that lacks one (`GET /app`).
-    /// Reads each key, so the first run may prompt for Keychain access once per app; after
-    /// that the name is cached in the item and reads are silent. Returns how many resolved.
-    @discardableResult
-    func fetchAppNames() async -> Int {
+    /// Backfill display names from GitHub for stored keys (`GET /app`). Reads each key, so
+    /// the first run may prompt for Keychain access once per app; after that the name is
+    /// cached in the item and reads are silent. Only records a name when GitHub confirms
+    /// the key really belongs to that App ID — a mismatch means a wrong/duplicate import,
+    /// which it reports (and clears any stale name for) instead of mislabeling.
+    /// Returns the count resolved plus any warnings to surface.
+    func fetchAppNames(force: Bool = false) async -> (resolved: Int, warnings: [String]) {
         let store = KeychainSecretStore(scope: .login)
         var resolved = 0
-        for app in storedApps() where app.name == nil {
+        var warnings: [String] = []
+        for app in storedApps() where force || app.name == nil {
             let client = GitHubAppClient(appID: app.id, secrets: store)
-            if let info = try? await client.appInfo() {
+            guard let info = try? await client.appInfo() else { continue }
+            if info.id == app.id {
                 try? await store.setName(info.name, forAppID: app.id)
                 resolved += 1
+            } else {
+                try? await store.setName(nil, forAppID: app.id)
+                warnings.append("App \(app.id)'s key actually belongs to App \(info.id) (“\(info.name)”) — it's a wrong/duplicate import; remove it.")
             }
         }
-        if resolved > 0 { objectWillChange.send() }
-        return resolved
+        objectWillChange.send()
+        return (resolved, warnings)
     }
 
     /// Targets (`org:…` / `repo:owner/name`) an App can reach, via the GitHub API. Returns

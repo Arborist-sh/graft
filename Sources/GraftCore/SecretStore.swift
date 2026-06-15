@@ -84,9 +84,10 @@ public struct KeychainSecretStore: SecretStore {
         }
     }
 
-    /// Set/replace just the stored display name for an App that already has a key —
-    /// re-reads the PEM and rewrites the item. Used to backfill names from GitHub.
-    public func setName(_ name: String, forAppID appID: Int) async throws {
+    /// Set/replace (or, with nil, clear) the stored display name for an App that already
+    /// has a key — re-reads the PEM and rewrites the item. Used to backfill names from
+    /// GitHub, and to clear a misleading name when a key turns out not to match its ID.
+    public func setName(_ name: String?, forAppID appID: Int) async throws {
         let pem = try await privateKeyPEM(forAppID: appID)
         try store(pem: pem, forAppID: appID, name: name)
     }

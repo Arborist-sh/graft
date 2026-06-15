@@ -74,13 +74,13 @@ struct SecretsView: View {
             HStack {
                 Label("GitHub App keys", systemImage: "key").font(.headline)
                 Spacer()
-                if apps.contains(where: { $0.name == nil }) {
+                if !apps.isEmpty {
                     Button { fetchNames() } label: {
                         if fetchingNames { ProgressView().controlSize(.small) }
                         else { Label("Fetch names", systemImage: "arrow.triangle.2.circlepath") }
                     }
                     .disabled(fetchingNames)
-                    .help("Look up display names from GitHub for keys that don't have one")
+                    .help("Look up / re-check display names from GitHub")
                 }
                 Button { creatingApp = true } label: { Label("Create App…", systemImage: "sparkles") }
                 Button { importing = true } label: { Label("Import key…", systemImage: "plus") }
@@ -141,9 +141,13 @@ struct SecretsView: View {
     private func fetchNames() {
         fetchingNames = true
         Task {
-            let n = await config.fetchAppNames()
+            let (n, warnings) = await config.fetchAppNames(force: true)
             refresh()
-            status = n > 0 ? "Resolved \(n) name\(n == 1 ? "" : "s") from GitHub." : "No names to resolve (or GitHub unreachable)."
+            if !warnings.isEmpty {
+                status = "⚠️ " + warnings.joined(separator: "  ")
+            } else {
+                status = n > 0 ? "Resolved \(n) name\(n == 1 ? "" : "s") from GitHub." : "No names to resolve (or GitHub unreachable)."
+            }
             fetchingNames = false
         }
     }
