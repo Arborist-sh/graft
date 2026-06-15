@@ -195,13 +195,38 @@ final class ConfigStore: ObservableObject {
         guard let graft = Self.graftPath else { return }
         // `exec $SHELL` after graft keeps the window alive whether the box shell held or
         // graft exited early — so nothing vanishes and you always land in a usable shell.
-        let cmd = "\(graft) nest \(short); exec $SHELL -il"
+        runInTerminal("\(graft) nest \(short); exec $SHELL -il")
+    }
+
+    /// Run a command in a new Terminal (or iTerm) window. For long, output-heavy, or
+    /// interactive flows (nest shell, sapling builds, pulls) the user needs to watch live.
+    private func runInTerminal(_ command: String) {
         let iterm = FileManager.default.fileExists(atPath: "/Applications/iTerm.app")
         let app = iterm ? "iTerm" : "Terminal"
         let open = iterm
-            ? "tell application \"iTerm\" to create window with default profile command \"\(cmd)\""
-            : "tell application \"Terminal\" to do script \"\(cmd)\""
+            ? "tell application \"iTerm\" to create window with default profile command \"\(command)\""
+            : "tell application \"Terminal\" to do script \"\(command)\""
         Self.launchDetached("/usr/bin/osascript", ["-e", open, "-e", "tell application \"\(app)\" to activate"])
+    }
+
+    // MARK: Saplings (images)
+
+    /// Remove a local image/sapling (`tart delete`).
+    func removeSapling(_ name: String) async {
+        await Task.detached { if let tart = Self.tartPath { _ = Self.capture(tart, ["delete", name]) } }.value
+    }
+
+    /// Grow a sapling from a `.graft` seed — `graft sapling grow -f <seed>` in a terminal
+    /// (the build streams a lot of output and takes a while).
+    func growSapling(seedPath: String) {
+        guard let graft = Self.graftPath else { return }
+        runInTerminal("\(graft) sapling grow -f '\(seedPath)'; exec $SHELL -il")
+    }
+
+    /// Pull an image from a registry — `graft sapling pull <ref>` in a terminal (long download).
+    func pullSapling(ref: String) {
+        guard let graft = Self.graftPath else { return }
+        runInTerminal("\(graft) sapling pull \(ref); exec $SHELL -il")
     }
 
     /// Whether the `graft` CLI is available — needed to open/create nests (it owns the
