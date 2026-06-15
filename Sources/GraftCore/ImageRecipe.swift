@@ -212,6 +212,77 @@ public struct ImageRecipe: Codable, Sendable {
         network = try c.decodeIfPresent(VMNetwork.self, forKey: .network)
     }
 
+    /// Clean YAML serialization for the GUI's structured editor: omit nil/empty fields so a
+    /// form-save produces a tidy `.graft` (no `xcode: null`, no `run: []`). Mirrors the
+    /// decoder's key set.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(from, forKey: .from)
+        try c.encodeIfPresent(xcode, forKey: .xcode)
+        try c.encodeIfPresent(node, forKey: .node)
+        try c.encodeIfPresent(ruby, forKey: .ruby)
+        try c.encodeIfPresent(python, forKey: .python)
+        try c.encodeIfPresent(java, forKey: .java)
+        try c.encodeIfPresent(go, forKey: .go)
+        try c.encodeIfPresent(rust, forKey: .rust)
+        try c.encodeIfPresent(packageManager, forKey: .packageManager)
+        try encodeNonEmpty(&c, brew, .brew)
+        try c.encodeIfPresent(cocoapods, forKey: .cocoapods)
+        try c.encodeIfPresent(fastlane, forKey: .fastlane)
+        try encodeNonEmpty(&c, gems, .gems)
+        try encodeNonEmpty(&c, npm, .npm)
+        try c.encodeIfPresent(xcodeFirstLaunch, forKey: .xcodeFirstLaunch)
+        try encodeNonEmpty(&c, simulatorRuntimes, .simulatorRuntimes)
+        try encodeNonEmpty(&c, warmSimulators, .warmSimulators)
+        try encodeNonEmptyMap(&c, env, .env)
+        try c.encodeIfPresent(git, forKey: .git)
+        try encodeNonEmpty(&c, knownHosts, .knownHosts)
+        try encodeNonEmptyMap(&c, write, .write)
+        try c.encodeIfPresent(timezone, forKey: .timezone)
+        try c.encodeIfPresent(hostname, forKey: .hostname)
+        try c.encodeIfPresent(disableSpotlight, forKey: .disableSpotlight)
+        try c.encodeIfPresent(disableSleep, forKey: .disableSleep)
+        try c.encodeIfPresent(description, forKey: .description)
+        try encodeNonEmptyMap(&c, labels, .labels)
+        try c.encodeIfPresent(podRepoWarm, forKey: .podRepoWarm)
+        try encodeNonEmpty(&c, prefetch, .prefetch)
+        if let repos, !repos.isEmpty { try c.encode(repos, forKey: .repos) }
+        try encodeNonEmpty(&c, verify, .verify)
+        try c.encodeIfPresent(cleanup, forKey: .cleanup)
+        try c.encodeIfPresent(cpu, forKey: .cpu)
+        try c.encodeIfPresent(memory, forKey: .memory)
+        try c.encodeIfPresent(disk, forKey: .disk)
+        try c.encodeIfPresent(display, forKey: .display)
+        try c.encodeIfPresent(script, forKey: .script)
+        if !run.isEmpty { try c.encode(run, forKey: .run) }
+        if let mounts, !mounts.isEmpty { try c.encode(mounts, forKey: .mounts) }
+        try c.encodeIfPresent(os, forKey: .os)
+        try c.encodeIfPresent(network, forKey: .network)
+    }
+
+    private func encodeNonEmpty(_ c: inout KeyedEncodingContainer<CodingKeys>, _ value: [String]?, _ key: CodingKeys) throws {
+        if let value, !value.isEmpty { try c.encode(value, forKey: key) }
+    }
+
+    private func encodeNonEmptyMap(_ c: inout KeyedEncodingContainer<CodingKeys>, _ value: [String: String]?, _ key: CodingKeys) throws {
+        if let value, !value.isEmpty { try c.encode(value, forKey: key) }
+    }
+
+    /// Parse a `.graft` (YAML or JSON) from a string — the in-memory counterpart to `load`.
+    public static func parse(_ text: String) throws -> ImageRecipe {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") {
+            return try JSONDecoder().decode(ImageRecipe.self, from: Data(text.utf8))
+        }
+        return try YAMLDecoder().decode(ImageRecipe.self, from: text)
+    }
+
+    /// Serialize this recipe to YAML for the structured editor (form-save).
+    public func yamlString() throws -> String {
+        try YAMLEncoder().encode(self)
+    }
+
     private static func version(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> String? {
         if let s = try? c.decode(String.self, forKey: key) { return s }
         if let i = try? c.decode(Int.self, forKey: key) { return String(i) }
