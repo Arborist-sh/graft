@@ -40,7 +40,7 @@
 
 graft today is **single-host-shaped**. `graft tree plant` / `branch` / `prune`,
 `arborist tend` — all run *on the machine you're sitting at*. The GUI manages the **local**
-supervisor and *reads* the Orchard fleet (the Forest/canopy view). There is **no way to
+supervisor and *reads* the Orchard fleet (the Canopy view). There is **no way to
 reach another Mac and control graft's processes on it.**
 
 What's missing, concretely:

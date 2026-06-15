@@ -23,7 +23,7 @@ struct Term {
 enum Lex {
     // Sections
     static let dashboard = Term(standard: "Dashboard", graft: "Tend")
-    static let forest    = Term(standard: "Fleet",     graft: "Forest")
+    static let canopy    = Term(standard: "Fleet",     graft: "Canopy")
     static let profiles  = Term(standard: "Profiles",  graft: "Plots")
     static let pools     = Term(standard: "Pools",     graft: "Stands")
     static let secrets   = Term(standard: "Secrets",   graft: "Roots")
@@ -73,7 +73,7 @@ struct SettingsView: View {
 
             Section("Preview") {
                 preview(Lex.dashboard)
-                preview(Lex.forest)
+                preview(Lex.canopy)
                 preview(Lex.pools)
                 preview(Lex.secrets)
                 preview(Lex.vms, suffix: " (a runner VM)")

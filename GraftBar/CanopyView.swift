@@ -1,12 +1,13 @@
 import SwiftUI
 import GraftCore
 
-/// The Forest section — a live "canopy" view of an Orchard tree: the trunk (controller),
-/// its branches (worker Macs) and their leaf capacity, and the leaves (VMs) graft owns on
-/// the cluster. Queries the Orchard controller directly (independent of whether graft's own
+/// The Canopy section — a live overview of an Orchard tree: the trunk (controller), its
+/// branches (worker Macs) and their leaf capacity, and the leaves (VMs) graft owns on the
+/// cluster. Queries the Orchard controller directly (independent of whether graft's own
 /// supervisor is running locally), refreshing every few seconds. Only meaningful for Orchard
 /// profiles — local-Tart profiles get a friendly nudge to the Dashboard instead.
-struct ForestView: View {
+/// ("Forest" is reserved for a future multi-tree / multi-controller view.)
+struct CanopyView: View {
     @ObservedObject var config: ConfigStore
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
@@ -39,7 +40,7 @@ struct ForestView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text(Lex.forest(vocab)).font(.title2.weight(.semibold))
+            Text(Lex.canopy(vocab)).font(.title2.weight(.semibold))
             if !config.profiles.isEmpty {
                 Picker("", selection: Binding(
                     get: { config.selected ?? "" },
@@ -71,7 +72,7 @@ struct ForestView: View {
         if selected == nil {
             empty("No profile", "Create a profile first, over in the Profiles tab.")
         } else if !isOrchard {
-            empty("Local Tart profile", "“\(selected ?? "")” runs \(Lex.vms(vocab)) on this Mac — watch it live on \(Lex.dashboard(vocab)). \(Lex.forest(vocab)) is for Orchard fleets.")
+            empty("Local Tart profile", "“\(selected ?? "")” runs \(Lex.vms(vocab)) on this Mac — watch it live on \(Lex.dashboard(vocab)). \(Lex.canopy(vocab)) is for Orchard fleets.")
         } else if let error, report == nil {
             unreachable(error)
         } else if let report {
