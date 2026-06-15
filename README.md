@@ -187,8 +187,8 @@ graft config template
 ```
 
 **Profiles** live at `~/.graft/profiles/<name>.json`; the active one is used by
-`run`/`doctor`/`config validate` unless you pass `--profile` or `--config`. Switch
-setups (personal vs. work) with `graft profile use`.
+`arborist tend`/`arborist check`/`config validate` unless you pass `--profile` or
+`--config`. Switch setups (personal vs. work) with `graft profile use`.
 
 ## Images & local dev
 
@@ -239,6 +239,21 @@ The model: **clone → persistent & resumable**; **mount (`.`) / scratch → eph
 Full guide — clone vs mount, `--code`, the picker, advanced flags — in
 **[docs/dev-boxes.md](docs/dev-boxes.md)**.
 
+## Desktop app
+
+`Graft.app` is a full desktop companion (the menu-bar app grown up) — a sidebar over:
+
+- **Dashboard** — live runners/leaves with phase + age; start/stop.
+- **Canopy** — the Orchard fleet at a glance: trunk reachability, capacity, branches, leaves.
+- **Nests** — dev boxes: open in VS Code or a shell, start/stop, watch live provisioning status.
+- **Saplings** — images: grow from a seed, pull, remove, and **inspect** what a base already has baked in.
+- **Seeds** — a structured **`.graft` builder** ("+ Add" only the toolchain/scripts/sims you want, with version dropdowns) ⟷ raw YAML, with a compiled-script preview.
+- **Profiles · Pools · Secrets** — full config, no JSON editing.
+
+It can **create a GitHub App for you** end-to-end (the manifest flow — no manual key
+download) or smart-import an existing key, and a **Standard ↔ Graft** vocabulary toggle
+lives in Settings. Install: `brew install --cask briancorbin/tap/graft-app`.
+
 ## Architecture
 
 Everything pivots on **`VMProvider`** — `capacity`, `acquire`, `release`, plus an
@@ -270,12 +285,13 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 
 ## Roadmap
 
-- Full desktop GUI app (dashboard, live logs, run history) — the menu-bar app's bigger sibling
+- **Remote host management + aggregated health ("Sapflow")** — control trunk/branch hosts and stream fleet health into one panel ([design](docs/design/control-plane-and-security.md))
+- **Share `.graft` seeds, not images** — a hosted minimal base ladder so a recipe is the unit you distribute ([design](docs/design/seed-distribution-and-base-images.md))
 - Keychain ACL hardening for the headless daemon (bind to the graft binary)
 - `--unsafe-unrestricted-quota` (kernel boot-arg override, SIP off, opt-in)
 - `Twig`: native `Virtualization.framework` backend
 
-Shipped: ✅ menu-bar app (`Graft.app`); ✅ image builder + `graft nest` + `.graft` recipes (toolchain/system/cache-warming/VM-shape fields, bridged networking, repo pre-caching); ✅ `OrchardProvider` multi-host backend
+Shipped: ✅ **full desktop app** (`Graft.app` — Dashboard, Canopy, Nests, Saplings, a `.graft` seed builder, and Profiles/Pools/Secrets config; creates GitHub Apps in-app); ✅ image builder + `graft nest` + `.graft` recipes (toolchain/system/cache-warming/VM-shape fields, bridged networking, repo pre-caching); ✅ `OrchardProvider` multi-host backend
 
 ## Install
 
