@@ -47,7 +47,7 @@ struct SecretsView: View {
         }
         .onAppear(perform: refresh)
         .sheet(isPresented: $importing) {
-            ImportKeySheet { id, pem in importKey(id: id, pem: pem) }
+            ImportKeySheet { id, pem, name in importKey(id: id, pem: pem, name: name) }
         }
         .sheet(isPresented: $creatingApp) {
             CreateAppSheet { id in status = "Created App \(id) — its key is stored."; refresh() }
@@ -152,10 +152,10 @@ struct SecretsView: View {
         }
     }
 
-    private func importKey(id: Int, pem: String) {
+    private func importKey(id: Int, pem: String, name: String?) {
         do {
-            try store.store(pem: pem, forAppID: id)
-            status = "Stored key for App \(id)."
+            try store.store(pem: pem, forAppID: id, name: name)
+            status = "Stored key for \(name ?? "App \(String(id))")."
             refresh()
         } catch {
             status = "Couldn't store key: \(error.localizedDescription)"
@@ -178,13 +178,20 @@ struct SecretsView: View {
     }
 }
 
-/// Import a GitHub App private key: App ID + the PEM (pasted, or read from a .pem file).
+/// Import a GitHub App private key. Picking the .pem GitHub gave you auto-detects the App
+/// ID + name from its filename (`‹slug›.‹date›.private-key.pem` → public GET /apps/{slug}),
+/// so you usually just choose the file and hit Import. The App ID stays editable for keys
+/// you pasted or renamed. (GitHub never exposes an existing key over the API, so the file
+/// is the one thing that must come from you.)
 struct ImportKeySheet: View {
-    let onImport: (Int, String) -> Void
+    let onImport: (Int, String, String?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var appIDText = ""
     @State private var pem = ""
+    @State private var detectedName: String?
+    @State private var looking = false
+    @State private var note: String?
 
     private var valid: Bool { Int(appIDText.trimmingCharacters(in: .whitespaces)) != nil && !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -194,6 +201,9 @@ struct ImportKeySheet: View {
             HStack {
                 Text("App ID").frame(width: 70, alignment: .leading)
                 TextField("e.g. 4021920", text: $appIDText).frame(width: 160)
+                    .onChange(of: appIDText) { detectedName = nil }
+                if looking { ProgressView().controlSize(.small) }
+                if let detectedName { Text(detectedName).font(.callout.weight(.medium)).foregroundStyle(.secondary) }
             }
             HStack {
                 Text("Private key").font(.subheadline)
@@ -202,15 +212,15 @@ struct ImportKeySheet: View {
             }
             TextEditor(text: $pem)
                 .font(.system(size: 11, design: .monospaced))
-                .frame(height: 160)
+                .frame(height: 150)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
-            Text("Pasted here or read from a file — stored in your login Keychain, never written to disk by graft.")
+            Text(note ?? "Choose the .pem GitHub gave you — graft auto-detects the App ID + name. Stored in your login Keychain, never written to disk by graft.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Import") {
-                    if let id = Int(appIDText.trimmingCharacters(in: .whitespaces)) { onImport(id, pem); dismiss() }
+                    if let id = Int(appIDText.trimmingCharacters(in: .whitespaces)) { onImport(id, pem, detectedName); dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!valid)
@@ -225,9 +235,37 @@ struct ImportKeySheet: View {
         panel.allowedContentTypes = []
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        if panel.runModal() == .OK, let url = panel.url, let text = try? String(contentsOf: url, encoding: .utf8) {
-            pem = text
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard panel.runModal() == .OK, let url = panel.url,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        pem = text
+        guard let slug = Self.slug(fromFilename: url.lastPathComponent) else {
+            note = "Loaded the key — enter the App ID (couldn't read it from the file name)."
+            return
         }
+        looking = true
+        note = "Looking up “\(slug)” on GitHub…"
+        Task {
+            if let info = try? await GitHubAppClient.publicAppInfo(slug: slug) {
+                appIDText = String(info.id)
+                detectedName = info.name
+                note = "Detected \(info.name) (App \(String(info.id))) from the file name."
+            } else {
+                note = "Loaded the key — couldn't auto-detect the App, enter the App ID manually."
+            }
+            looking = false
+        }
+    }
+
+    /// Pull the App slug out of GitHub's key filename: `‹slug›.‹YYYY-MM-DD›.private-key.pem`.
+    static func slug(fromFilename name: String) -> String? {
+        guard name.hasSuffix(".pem") else { return nil }
+        var s = String(name.dropLast(4))                              // .pem
+        if s.hasSuffix(".private-key") { s = String(s.dropLast(12)) } // .private-key
+        if let r = s.range(of: #"\.\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
+            s = String(s[s.startIndex..<r.lowerBound])                // .YYYY-MM-DD
+        }
+        return s.isEmpty ? nil : s
     }
 }
 
@@ -248,6 +286,8 @@ struct CreateAppSheet: View {
     @State private var running = false
     @State private var status: String?
     @State private var created: AppManifestFlow.Created?
+    @State private var awaitingInstall = false
+    @State private var installed = false
 
     private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
     private var orgValid: Bool { !useOrg || !org.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -278,11 +318,20 @@ struct CreateAppSheet: View {
             Divider()
             HStack {
                 if running { ProgressView().controlSize(.small); Text("Waiting for GitHub…").font(.caption).foregroundStyle(.secondary) }
+                else if awaitingInstall { ProgressView().controlSize(.small); Text("Waiting for installation…").font(.caption).foregroundStyle(.secondary) }
+                else if installed { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green); Text("Installed").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 if created != nil {
-                    Button("Install App…") { openInstall() }
-                        .buttonStyle(.borderedProminent)
-                    Button("Done") { finish() }
+                    if !installed {
+                        Button("Install App…") { openInstall() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(awaitingInstall)
+                    }
+                    if installed {
+                        Button("Done") { finish() }.buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Done") { finish() }
+                    }
                 } else {
                     Button("Cancel") { dismiss() }
                     Button("Create") { create() }
@@ -306,9 +355,9 @@ struct CreateAppSheet: View {
                 let result = try await AppManifestFlow.run(account: account, name: appName.isEmpty ? nil : appName) { url in
                     DispatchQueue.main.async { NSWorkspace.shared.open(url) }
                 }
-                try store.store(pem: result.pem, forAppID: result.appID)
+                try store.store(pem: result.pem, forAppID: result.appID, name: result.name)
                 created = result
-                status = "✓ Created “\(result.name)” (App \(result.appID)) and stored its key. Now install it."
+                status = "✓ Created “\(result.name)” (App \(String(result.appID))) and stored its key. Now install it."
             } catch {
                 status = "Failed: \(error.localizedDescription)"
             }
@@ -317,10 +366,36 @@ struct CreateAppSheet: View {
     }
 
     private func openInstall() {
-        if let c = created, let url = URL(string: c.installURL) { NSWorkspace.shared.open(url) }
+        guard let c = created, let url = URL(string: c.installURL) else { return }
+        NSWorkspace.shared.open(url)
+        startInstallWatch()
+    }
+
+    /// After opening the install page, poll GitHub until the App shows up as installed
+    /// somewhere (a brand-new App starts with zero installations), so we can confirm the
+    /// step actually completed instead of leaving the user guessing.
+    private func startInstallWatch() {
+        guard let c = created else { return }
+        awaitingInstall = true
+        Task {
+            let client = GitHubAppClient(appID: c.appID, secrets: store)
+            let deadline = Date().addingTimeInterval(300)
+            while awaitingInstall, Date() < deadline {
+                if let installs = try? await client.installations(), !installs.isEmpty {
+                    let where_ = installs.map(\.account.login).joined(separator: ", ")
+                    installed = true
+                    awaitingInstall = false
+                    status = "✓ Installed on \(where_)."
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+            awaitingInstall = false
+        }
     }
 
     private func finish() {
+        awaitingInstall = false
         if let c = created { onCreated(c.appID) }
         dismiss()
     }
