@@ -78,9 +78,11 @@ struct MenuContentView: View {
                     }
                 }
             } label: {
-                Label("Profile: \(controller.activeProfile ?? "—")", systemImage: "square.stack.3d.up")
+                Label("Profile: \(controller.activeProfile ?? "—")",
+                      systemImage: controller.isRunning ? "lock" : "square.stack.3d.up")
             }
-            .disabled(busy)
+            .disabled(busy || controller.isRunning)
+            .help(controller.isRunning ? "Stop the fleet to switch profiles" : "Switch profile")
         }
     }
 

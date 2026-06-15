@@ -75,11 +75,13 @@ struct DashboardView: View {
                     }
                 }
             } label: {
-                Label(controller.activeProfile ?? "no profile", systemImage: "square.stack.3d.up")
+                Label(controller.activeProfile ?? "no profile",
+                      systemImage: controller.isRunning ? "lock" : "square.stack.3d.up")
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .disabled(busy)
+            .disabled(busy || controller.isRunning)
+            .help(controller.isRunning ? "Stop the fleet to switch profiles" : "Switch profile")
         }
     }
 

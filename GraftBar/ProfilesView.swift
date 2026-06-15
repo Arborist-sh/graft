@@ -89,6 +89,8 @@ struct ProfilesView: View {
                     controller.useProfile(name)
                     config.reload()
                 }
+                .disabled(controller.isRunning)
+                .help(controller.isRunning ? "Stop the fleet to switch the active profile" : "Make this the active profile")
             }
             Button("Edit") { editTarget = EditTarget(name: name) }
             Button(role: .destructive) { pendingDelete = name } label: {
