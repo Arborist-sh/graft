@@ -1,3 +1,4 @@
+import GraftCore
 import SwiftUI
 
 /// Which set of names the UI shows. graft's concepts have a botanical theme, but not
@@ -40,6 +41,27 @@ enum Lex {
     static let workers   = Term(standard: "Workers",  graft: "Branches")
     static let controller = Term(standard: "Controller", graft: "Trunk")
     static let image     = Term(standard: "Image",    graft: "Sapling")
+
+    // Health categories — the plain machine name (also what webhooks/Sentry see) paired
+    // with graft's botanical condition-name from the design docs (rot/blight/drought/…).
+    static let catAuth       = Term(standard: "Auth",       graft: "Rot")
+    static let catRunner     = Term(standard: "Runner",     graft: "Blight")
+    static let catCapacity   = Term(standard: "Capacity",   graft: "Drought")
+    static let catLeaf       = Term(standard: "VM",         graft: "Wilt")
+    static let catSupervisor = Term(standard: "Supervisor", graft: "Deadwood")
+    static let catHost       = Term(standard: "Host",       graft: "Soil")
+
+    /// The themed label for a health category, so Sapflow rows speak the chosen dialect.
+    static func category(_ c: HealthEvent.Category) -> Term {
+        switch c {
+        case .auth:       return catAuth
+        case .runner:     return catRunner
+        case .capacity:   return catCapacity
+        case .leaf:       return catLeaf
+        case .supervisor: return catSupervisor
+        case .host:       return catHost
+        }
+    }
 }
 
 /// Read the active vocabulary anywhere with `@AppStorageVocabulary var vocab`. Defaults to
