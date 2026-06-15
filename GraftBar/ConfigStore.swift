@@ -47,6 +47,21 @@ final class ConfigStore: ObservableObject {
         reload()
     }
 
+    /// An Orchard provider for a profile, with the controller token resolved from the
+    /// Keychain (mirrors the CLI's `Tree.provider`). Nil for non-Orchard profiles. Reading
+    /// the token may prompt for Keychain access once if the CLI stored it.
+    func orchardProvider(for name: String) -> OrchardProvider? {
+        guard let cfg = config(name), var orchard = cfg.orchard else { return nil }
+        if (orchard.token ?? "").isEmpty {
+            let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
+            orchard.token = KeychainSecretStore(scope: scope).orchardToken(account: orchard.serviceAccount)
+        }
+        return OrchardProvider(config: orchard)
+    }
+
+    /// True if the profile is configured for an Orchard fleet (vs local Tart).
+    func isOrchard(_ name: String) -> Bool { config(name)?.orchard != nil }
+
     /// Local Tart images you can clone a pool from — `tart list` minus digest-pinned
     /// duplicates and graft's own transient VMs (leaves / dev / build boxes). Mirrors the
     /// CLI's `ImagePicker`. Shelled by full path because a GUI app's PATH is minimal, and
