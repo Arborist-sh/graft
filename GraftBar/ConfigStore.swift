@@ -66,6 +66,30 @@ final class ConfigStore: ObservableObject {
         }.value
     }
 
+    /// GitHub App IDs we hold a private key for, in the login Keychain — the natural set
+    /// of App IDs to offer in the profile editor. Attribute-only read, so no access prompt.
+    func storedAppIDs() -> [Int] {
+        ((try? KeychainSecretStore(scope: .login).storedAppIDs()) ?? []).sorted()
+    }
+
+    /// Targets (`org:…` / `repo:owner/name`) an App can reach, via the GitHub API. Returns
+    /// nil if we couldn't reach GitHub (no key, offline, timeout) so the caller falls back
+    /// to manual entry; an empty array means "reached GitHub, nothing accessible". Bounded
+    /// by a timeout because it's network I/O behind a dropdown.
+    func accessibleTargets(appID: Int, timeout: Double = 8) async -> [String]? {
+        let client = GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: .login))
+        return await withTaskGroup(of: [String]?.self) { group in
+            group.addTask { try? await client.accessibleTargets() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
     nonisolated private static let tartPath: String? =
         ["/opt/homebrew/bin/tart", "/usr/local/bin/tart"].first { FileManager.default.isExecutableFile(atPath: $0) }
 

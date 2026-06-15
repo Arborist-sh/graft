@@ -123,8 +123,11 @@ public struct GitHubAppClient: Sendable {
             let account: Account
             struct Account: Decodable { let login: String; let type: String }
         }
-        let instData = try await request("GET", path: "app/installations", bearer: jwt)
-        let installations = try Self.snakeDecoder.decode([Installation].self, from: instData)
+        // Paginate — GitHub caps a page at 100 and defaults to 30; an App on a big org
+        // can have far more than one page of installations or repos.
+        let installations = try await paged("app/installations", bearer: jwt) {
+            try Self.snakeDecoder.decode([Installation].self, from: $0)
+        }
 
         var targets: [String] = []
         for inst in installations {
@@ -132,17 +135,39 @@ public struct GitHubAppClient: Sendable {
                 targets.append("org:\(inst.account.login)")
             }
             // Repos need an installation token (the App JWT can't read them directly).
-            guard let token = try? await installationToken(installationID: inst.id),
-                  let repoData = try? await request("GET", path: "installation/repositories", bearer: token)
-            else { continue }
+            guard let token = try? await installationToken(installationID: inst.id) else { continue }
             struct Repos: Decodable {
                 let repositories: [Repo]
                 struct Repo: Decodable { let fullName: String }
             }
-            let repos = (try? Self.snakeDecoder.decode(Repos.self, from: repoData))?.repositories ?? []
+            let repos = (try? await paged("installation/repositories", bearer: token) {
+                try Self.snakeDecoder.decode(Repos.self, from: $0).repositories
+            }) ?? []
             targets.append(contentsOf: repos.map { "repo:\($0.fullName)" })
         }
         return targets
+    }
+
+    /// Fetch every page of a paginated GitHub list endpoint, accumulating decoded items.
+    /// Walks `?per_page=100&page=N`, stopping on the first short (< 100) page; capped at
+    /// 50 pages (5k items) as a runaway guard. `extract` pulls the items out of one page
+    /// (a bare array for `app/installations`, the `repositories` field for repos).
+    private func paged<Item>(
+        _ path: String,
+        bearer: String,
+        extract: (Data) throws -> [Item]
+    ) async throws -> [Item] {
+        var items: [Item] = []
+        let sep = path.contains("?") ? "&" : "?"
+        var page = 1
+        while page <= 50 {
+            let data = try await request("GET", path: "\(path)\(sep)per_page=100&page=\(page)", bearer: bearer)
+            let batch = try extract(data)
+            items.append(contentsOf: batch)
+            if batch.count < 100 { break }
+            page += 1
+        }
+        return items
     }
 
     /// Mint an installation token straight from an installation id (the

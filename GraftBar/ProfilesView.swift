@@ -164,6 +164,13 @@ struct ProfileSettingsSheet: View {
     @State private var target = ""
     @State private var runnerGroup = "1"
 
+    /// App IDs we hold a key for (dropdown source); targets the chosen App can reach.
+    @State private var appIDs: [Int] = []
+    @State private var targets: [String] = []
+    @State private var targetsLoading = false
+    /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
+    @State private var targetsReached = true
+
     private var valid: Bool {
         guard orchard else { return true }
         return !controllerURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -188,9 +195,48 @@ struct ProfileSettingsSheet: View {
                     }
                 }
                 Section("GitHub") {
-                    TextField("App ID", text: $appID, prompt: Text("e.g. 4021920"))
-                    TextField("Target", text: $target, prompt: Text("repo:owner/name  or  org:name"))
-                    TextField("Runner group", text: $runnerGroup, prompt: Text("1"))
+                    LabeledContent("App ID") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $appID, prompt: Text("e.g. 4021920"))
+                                .onSubmit { reloadTargets() }
+                            if !appIDs.isEmpty {
+                                Menu("") {
+                                    ForEach(appIDs, id: \.self) { id in
+                                        Button("App \(id)") { appID = String(id); reloadTargets() }
+                                    }
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .help("Apps with a private key in your Keychain")
+                            }
+                        }
+                    }
+                    LabeledContent("Target") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $target, prompt: Text("repo:owner/name  ·  org:name"))
+                            if targetsLoading {
+                                ProgressView().controlSize(.small)
+                            } else if !targets.isEmpty {
+                                Menu("") {
+                                    ForEach(targets, id: \.self) { t in
+                                        Button(t) { target = t }
+                                    }
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .help("Orgs + repos this App can reach")
+                            }
+                        }
+                    }
+                    if !targetsLoading, !targetsReached, Int(appID.trimmingCharacters(in: .whitespaces)) != nil {
+                        Text("Couldn't reach GitHub for the target list — type it manually, or import the App key in Secrets.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if target.trimmingCharacters(in: .whitespaces).hasPrefix("org:") {
+                        TextField("Runner group", text: $runnerGroup, prompt: Text("1"))
+                        Text("Org runner-group id (Default = 1). Repos always use the default group.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("The App private key is set in the Secrets section.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -224,6 +270,23 @@ struct ProfileSettingsSheet: View {
             target = gh.target
             runnerGroup = String(gh.runnerGroupId)
         }
+        appIDs = config.storedAppIDs()
+        reloadTargets()
+    }
+
+    /// Refresh the target dropdown for the current App ID (network, off the main actor via
+    /// ConfigStore). No-op if the App ID field isn't a number yet.
+    private func reloadTargets() {
+        guard let id = Int(appID.trimmingCharacters(in: .whitespaces)) else {
+            targets = []; targetsReached = true; targetsLoading = false; return
+        }
+        targetsLoading = true
+        Task {
+            let result = await config.accessibleTargets(appID: id)
+            targetsLoading = false
+            targetsReached = result != nil
+            targets = result ?? []
+        }
     }
 
     private func save() {
@@ -238,13 +301,13 @@ struct ProfileSettingsSheet: View {
         } else {
             c.provider = .tart
         }
-        if let id = Int(appID.trimmingCharacters(in: .whitespaces)),
-           !target.trimmingCharacters(in: .whitespaces).isEmpty {
-            c.github = GitHubConfig(
-                appId: id,
-                target: target.trimmingCharacters(in: .whitespaces),
-                runnerGroupId: Int(runnerGroup.trimmingCharacters(in: .whitespaces)) ?? 1
-            )
+        let cleanTarget = target.trimmingCharacters(in: .whitespaces)
+        if let id = Int(appID.trimmingCharacters(in: .whitespaces)), !cleanTarget.isEmpty {
+            // Runner groups only exist for orgs; repo runners always use the default (1).
+            let group = cleanTarget.hasPrefix("org:")
+                ? (Int(runnerGroup.trimmingCharacters(in: .whitespaces)) ?? 1)
+                : 1
+            c.github = GitHubConfig(appId: id, target: cleanTarget, runnerGroupId: group)
         } else {
             c.github = nil
         }
