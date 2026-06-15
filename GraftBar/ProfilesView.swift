@@ -202,7 +202,7 @@ struct ProfileSettingsSheet: View {
                                 .onSubmit { reloadTargets() }
                             Menu("") {
                                 ForEach(appIDs, id: \.self) { id in
-                                    Button("App \(id)") { appID = String(id); reloadTargets() }
+                                    Button("App \(String(id))") { appID = String(id); reloadTargets() }
                                 }
                                 if !appIDs.isEmpty { Divider() }
                                 Button { creatingApp = true } label: { Label("Create new App…", systemImage: "sparkles") }

@@ -57,7 +57,7 @@ struct SecretsView: View {
             }
         }
         .confirmationDialog(
-            "Remove the key for App \(pendingRemove ?? 0)?",
+            "Remove the key for App \(String(pendingRemove ?? 0))?",
             isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
             titleVisibility: .visible
         ) {
@@ -83,7 +83,7 @@ struct SecretsView: View {
                 ForEach(appIDs, id: \.self) { id in
                     HStack {
                         Image(systemName: "key.fill").foregroundStyle(.green)
-                        Text("App \(id)").font(.body.weight(.medium))
+                        Text("App \(String(id))").font(.body.weight(.medium))
                         Spacer()
                         Button(role: .destructive) { pendingRemove = id } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
