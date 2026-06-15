@@ -22,6 +22,9 @@ struct SeedsView: View {
     @State private var renderOutput = ""
     @State private var status: String?
     @State private var images: [String] = []
+    @State private var inspecting = false
+    @State private var showInspect = false
+    @State private var inspectOutput = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,6 +34,7 @@ struct SeedsView: View {
         }
         .task { images = await config.localImages() }
         .sheet(isPresented: $rendering) { RenderSheet(script: renderOutput) }
+        .sheet(isPresented: $showInspect) { InspectSheet(image: form.from, report: inspectOutput) }
     }
 
     // MARK: Header
@@ -76,6 +80,12 @@ struct SeedsView: View {
                             Menu("") { ForEach(images, id: \.self) { img in Button(img) { form.from = img } } }
                                 .menuStyle(.borderlessButton).fixedSize().help("Pick a local image")
                         }
+                        Button { inspect() } label: {
+                            if inspecting { ProgressView().controlSize(.small) } else { Image(systemName: "magnifyingglass") }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(inspecting || !config.graftAvailable || form.from.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .help("Boot this image and see what's already installed (~1 min)")
                     }
                 }
             }
@@ -292,6 +302,39 @@ struct SeedsView: View {
         guard save(), let p = path else { return }
         config.growSapling(seedPath: p)
         status = "Growing — watch the terminal; it'll appear in Saplings when done."
+    }
+
+    private func inspect() {
+        let img = form.from.trimmingCharacters(in: .whitespaces)
+        guard !img.isEmpty else { return }
+        inspecting = true
+        Task {
+            inspectOutput = await config.inspectImage(img)
+            inspecting = false
+            showInspect = true
+        }
+    }
+}
+
+/// What's installed in a base image (from `graft sapling inspect`).
+struct InspectSheet: View {
+    let image: String
+    let report: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("What's in \(image)").font(.headline).padding(16).lineLimit(1).truncationMode(.middle)
+            Divider()
+            ScrollView {
+                Text(report.isEmpty ? "(nothing)" : report)
+                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+            Divider()
+            HStack { Spacer(); Button("Close") { dismiss() }.keyboardShortcut(.defaultAction) }.padding(16)
+        }
+        .frame(width: 560, height: 440)
     }
 }
 

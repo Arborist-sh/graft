@@ -248,6 +248,17 @@ final class ConfigStore: ObservableObject {
         runInTerminal("\(graft) sapling pull \(ref); exec $SHELL -il")
     }
 
+    /// Boot an image and report what's installed (`graft sapling inspect`). Slow (~1 min —
+    /// it boots a throwaway clone), so call it off-main and show a spinner. Returns the
+    /// report text (progress + tool versions), or an error string.
+    func inspectImage(_ name: String) async -> String {
+        await Task.detached { () -> String in
+            guard let graft = Self.graftPath else { return "graft CLI not found." }
+            let out = Self.capture(graft, ["sapling", "inspect", name], mergeStderr: true)
+            return out.isEmpty ? "No output — the image may have failed to boot." : out
+        }.value
+    }
+
     /// Whether the `graft` CLI is available — needed to open/create nests (it owns the
     /// boot + Remote-SSH dance). List/stop/remove work without it (pure `tart`).
     var graftAvailable: Bool { Self.graftPath != nil }

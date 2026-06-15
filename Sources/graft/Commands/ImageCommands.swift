@@ -8,7 +8,7 @@ struct Image: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sapling",
         abstract: "Grow and manage saplings — the golden images leaves clone from.",
-        subcommands: [Build.self, Render.self, List.self, Remove.self, Prune.self, Push.self, Pull.self, Template.self]
+        subcommands: [Build.self, Render.self, Inspect.self, List.self, Remove.self, Prune.self, Push.self, Pull.self, Template.self]
     )
 }
 
@@ -61,6 +61,55 @@ extension Image {
             let scriptBody = try recipeScriptBody(recipe, recipeFile: seed)
             print("# image '\(recipe.name)' from \(recipe.from)")
             print(recipe.provisioning(scriptBody: scriptBody) ?? "# (nothing to provision)")
+        }
+    }
+
+    struct Inspect: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Boot an image and report the tools/versions baked into it."
+        )
+
+        @Argument(help: "Local image name (a base or a grown sapling).")
+        var image: String
+
+        func run() async throws {
+            guard try await Tart.exists(name: image) else {
+                throw GraftError("no local image '\(image)' — `graft sapling pull <ref>` first, or check `graft sapling list`")
+            }
+            let provider = LocalTartProvider()
+            let temp = "graft-inspect-" + UUID().uuidString.prefix(8).lowercased()
+
+            printErr("cloning \(image) → probe VM…")
+            try await Tart.clone(image: image, to: temp)
+            // Always clean up the throwaway probe VM.
+            defer { Task { try? await Tart.stop(name: temp); try? await Tart.delete(name: temp) } }
+
+            printErr("booting (a cold image can take ~60–90s)…")
+            try Tart.run(name: temp)
+            try await provider.waitForGuest(RunningVM(name: temp, ip: "", os: .macOS), timeout: .seconds(180))
+
+            let probe = """
+            echo "macOS:     $(sw_vers -productVersion 2>/dev/null)"
+            echo "Xcode:     $(xcodebuild -version 2>/dev/null | head -1 | sed 's/Xcode //')"
+            echo "Swift:     $(swift --version 2>/dev/null | head -1 | sed -E 's/.*Swift version ([0-9.]+).*/\\1/')"
+            echo "Node:      $(node --version 2>/dev/null | sed 's/v//')"
+            echo "Ruby:      $(ruby --version 2>/dev/null | awk '{print $2}')"
+            echo "Python:    $(python3 --version 2>/dev/null | awk '{print $2}')"
+            echo "Java:      $(java -version 2>&1 | head -1 | awk -F'\\"' '{print $2}')"
+            echo "Go:        $(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')"
+            echo "Rust:      $(rustc --version 2>/dev/null | awk '{print $2}')"
+            echo "CocoaPods: $(pod --version 2>/dev/null)"
+            echo "Fastlane:  $(fastlane --version 2>/dev/null | awk '/fastlane [0-9]/{print $2}' | tail -1)"
+            echo ""
+            echo "Homebrew formulae:"
+            brew list --formula 2>/dev/null | tr '\\n' ' '
+            echo ""
+            if [ -f /etc/graft-image ]; then echo ""; echo "graft image metadata:"; cat /etc/graft-image; fi
+            """
+            let result = try await provider.exec(on: RunningVM(name: temp, ip: "", os: .macOS),
+                                                 ["bash", "-lc", probe], timeout: .seconds(60))
+            print("# \(image)")
+            print(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
