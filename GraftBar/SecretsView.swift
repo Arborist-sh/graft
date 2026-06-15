@@ -10,9 +10,10 @@ import AppKit
 struct SecretsView: View {
     @ObservedObject var config: ConfigStore
 
-    @State private var appIDs: [Int] = []
+    @State private var apps: [KeychainSecretStore.StoredApp] = []
     @State private var importing = false
     @State private var creatingApp = false
+    @State private var fetchingNames = false
     @State private var settingToken = false
     @State private var pendingRemove: Int?
     @State private var status: String?
@@ -73,19 +74,31 @@ struct SecretsView: View {
             HStack {
                 Label("GitHub App keys", systemImage: "key").font(.headline)
                 Spacer()
+                if apps.contains(where: { $0.name == nil }) {
+                    Button { fetchNames() } label: {
+                        if fetchingNames { ProgressView().controlSize(.small) }
+                        else { Label("Fetch names", systemImage: "arrow.triangle.2.circlepath") }
+                    }
+                    .disabled(fetchingNames)
+                    .help("Look up display names from GitHub for keys that don't have one")
+                }
                 Button { creatingApp = true } label: { Label("Create App…", systemImage: "sparkles") }
                 Button { importing = true } label: { Label("Import key…", systemImage: "plus") }
             }
-            if appIDs.isEmpty {
+            if apps.isEmpty {
                 Text("No GitHub App private keys stored. Create a new App, or import an existing key.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
-                ForEach(appIDs, id: \.self) { id in
+                ForEach(apps, id: \.id) { app in
                     HStack {
                         Image(systemName: "key.fill").foregroundStyle(.green)
-                        Text("App \(String(id))").font(.body.weight(.medium))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(app.name ?? "App \(String(app.id))").font(.body.weight(.medium))
+                            Text(app.name != nil ? "App \(String(app.id))" : "no name yet")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Spacer()
-                        Button(role: .destructive) { pendingRemove = id } label: { Image(systemName: "trash") }
+                        Button(role: .destructive) { pendingRemove = app.id } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
                     }
                     .padding(.vertical, 4)
@@ -122,7 +135,17 @@ struct SecretsView: View {
     // MARK: Actions
 
     private func refresh() {
-        appIDs = ((try? store.storedAppIDs()) ?? []).sorted()
+        apps = config.storedApps()
+    }
+
+    private func fetchNames() {
+        fetchingNames = true
+        Task {
+            let n = await config.fetchAppNames()
+            refresh()
+            status = n > 0 ? "Resolved \(n) name\(n == 1 ? "" : "s") from GitHub." : "No names to resolve (or GitHub unreachable)."
+            fetchingNames = false
+        }
     }
 
     private func importKey(id: Int, pem: String) {

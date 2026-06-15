@@ -113,6 +113,20 @@ public struct GitHubAppClient: Sendable {
         return nil
     }
 
+    /// The authenticated App's own identity (`GET /app`) — its numeric id, URL slug, and
+    /// human display name. Used to label stored keys by name instead of a bare number.
+    public struct AppInfo: Sendable, Decodable {
+        public let id: Int
+        public let slug: String
+        public let name: String
+    }
+
+    public func appInfo() async throws -> AppInfo {
+        let jwt = try await appJWT()
+        let data = try await request("GET", path: "app", bearer: jwt)
+        return try Self.snakeDecoder.decode(AppInfo.self, from: data)
+    }
+
     /// Targets this App can actually reach: `org:<login>` for every org the App is
     /// installed on, plus `repo:<owner>/<name>` for every accessible repo. Powers the
     /// setup wizard's target picker so you select a valid target instead of retyping.

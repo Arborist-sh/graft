@@ -72,6 +72,34 @@ final class ConfigStore: ObservableObject {
         ((try? KeychainSecretStore(scope: .login).storedAppIDs()) ?? []).sorted()
     }
 
+    /// Apps with a stored key, each with its display name if we've recorded one. Prompt-free.
+    func storedApps() -> [KeychainSecretStore.StoredApp] {
+        (try? KeychainSecretStore(scope: .login).storedApps()) ?? []
+    }
+
+    /// The recorded display name for an App ID, or nil. Prompt-free.
+    func appName(_ id: Int) -> String? {
+        storedApps().first { $0.id == id }?.name
+    }
+
+    /// Backfill display names from GitHub for any stored key that lacks one (`GET /app`).
+    /// Reads each key, so the first run may prompt for Keychain access once per app; after
+    /// that the name is cached in the item and reads are silent. Returns how many resolved.
+    @discardableResult
+    func fetchAppNames() async -> Int {
+        let store = KeychainSecretStore(scope: .login)
+        var resolved = 0
+        for app in storedApps() where app.name == nil {
+            let client = GitHubAppClient(appID: app.id, secrets: store)
+            if let info = try? await client.appInfo() {
+                try? await store.setName(info.name, forAppID: app.id)
+                resolved += 1
+            }
+        }
+        if resolved > 0 { objectWillChange.send() }
+        return resolved
+    }
+
     /// Targets (`org:…` / `repo:owner/name`) an App can reach, via the GitHub API. Returns
     /// nil if we couldn't reach GitHub (no key, offline, timeout) so the caller falls back
     /// to manual entry; an empty array means "reached GitHub, nothing accessible". Bounded

@@ -8,7 +8,7 @@ struct Secrets: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "secrets",
         abstract: "Manage GitHub App private keys in the macOS Keychain.",
-        subcommands: [CreateApp.self, Import.self, List.self, Remove.self]
+        subcommands: [CreateApp.self, Import.self, List.self, FetchNames.self, Remove.self]
     )
 }
 
@@ -50,7 +50,7 @@ extension Secrets {
                 Self.open(url)
             }
 
-            try keychain.store.store(pem: created.pem, forAppID: created.appID)
+            try keychain.store.store(pem: created.pem, forAppID: created.appID, name: created.name)
             printErr("✓ created App “\(created.name)” (id \(created.appID)); key stored in the \(keychain.scope.rawValue) keychain")
 
             if let profile {
@@ -89,6 +89,9 @@ extension Secrets {
         @Option(name: .long, help: "Path to the App private-key .pem.")
         var pem: String
 
+        @Option(name: .long, help: "Display name for the App (else fetch it later with `secrets fetch-names`).")
+        var name: String?
+
         @OptionGroup var keychain: KeychainScopeOptions
 
         func run() async throws {
@@ -97,24 +100,51 @@ extension Secrets {
                 throw GraftError("can't read PEM at \(path)")
             }
             try PrivateKeyValidator.validate(pem: contents)
-            try keychain.store.store(pem: contents, forAppID: appId)
+            try keychain.store.store(pem: contents, forAppID: appId, name: name)
             printErr("✓ stored key for app \(appId) in the \(keychain.scope.rawValue) keychain")
             printErr("  now shred the file:  rm -P \(path)")
         }
     }
 
     struct List: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "List App IDs with a stored key.")
+        static let configuration = CommandConfiguration(abstract: "List App IDs (and names) with a stored key.")
 
         @OptionGroup var keychain: KeychainScopeOptions
 
         func run() throws {
-            let ids = try keychain.store.storedAppIDs()
-            guard !ids.isEmpty else {
+            let apps = try keychain.store.storedApps()
+            guard !apps.isEmpty else {
                 printErr("no keys in the \(keychain.scope.rawValue) keychain")
                 return
             }
-            for id in ids { print(id) }
+            for app in apps {
+                if let name = app.name { print("\(app.id)\t\(name)") } else { print("\(app.id)") }
+            }
+        }
+    }
+
+    /// Backfill display names for stored keys by asking GitHub (`GET /app`) — for keys
+    /// imported before names were tracked. Reads each key (may prompt for Keychain access).
+    struct FetchNames: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "fetch-names",
+            abstract: "Resolve + store display names for stored keys from GitHub."
+        )
+
+        @OptionGroup var keychain: KeychainScopeOptions
+
+        func run() async throws {
+            let apps = try keychain.store.storedApps()
+            guard !apps.isEmpty else { printErr("no keys in the \(keychain.scope.rawValue) keychain"); return }
+            for app in apps where app.name == nil {
+                do {
+                    let info = try await GitHubAppClient(appID: app.id, secrets: keychain.store).appInfo()
+                    try await keychain.store.setName(info.name, forAppID: app.id)
+                    printErr("✓ \(app.id) → \(info.name)")
+                } catch {
+                    printErr("✗ \(app.id): \(error)")
+                }
+            }
         }
     }
 

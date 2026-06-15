@@ -164,8 +164,8 @@ struct ProfileSettingsSheet: View {
     @State private var target = ""
     @State private var runnerGroup = "1"
 
-    /// App IDs we hold a key for (dropdown source); targets the chosen App can reach.
-    @State private var appIDs: [Int] = []
+    /// Apps we hold a key for (dropdown source); targets the chosen App can reach.
+    @State private var apps: [KeychainSecretStore.StoredApp] = []
     @State private var targets: [String] = []
     @State private var targetsLoading = false
     /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
@@ -197,19 +197,27 @@ struct ProfileSettingsSheet: View {
                 }
                 Section("GitHub") {
                     LabeledContent("App ID") {
-                        HStack(spacing: 6) {
-                            TextField("", text: $appID, prompt: Text("e.g. 4021920"))
-                                .onSubmit { reloadTargets() }
-                            Menu("") {
-                                ForEach(appIDs, id: \.self) { id in
-                                    Button("App \(String(id))") { appID = String(id); reloadTargets() }
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                TextField("", text: $appID, prompt: Text("e.g. 4021920"))
+                                    .onSubmit { reloadTargets() }
+                                Menu("") {
+                                    ForEach(apps, id: \.id) { app in
+                                        Button(app.name.map { "\($0)  (\(app.id))" } ?? "App \(String(app.id))") {
+                                            appID = String(app.id); reloadTargets()
+                                        }
+                                    }
+                                    if !apps.isEmpty { Divider() }
+                                    Button { creatingApp = true } label: { Label("Create new App…", systemImage: "sparkles") }
                                 }
-                                if !appIDs.isEmpty { Divider() }
-                                Button { creatingApp = true } label: { Label("Create new App…", systemImage: "sparkles") }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .help("Keychain Apps, or create a new one")
                             }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                            .help("Keychain Apps, or create a new one")
+                            if let id = Int(appID.trimmingCharacters(in: .whitespaces)),
+                               let name = apps.first(where: { $0.id == id })?.name {
+                                Text(name).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                     LabeledContent("Target") {
@@ -258,7 +266,7 @@ struct ProfileSettingsSheet: View {
         .sheet(isPresented: $creatingApp) {
             CreateAppSheet { id in
                 appID = String(id)
-                appIDs = config.storedAppIDs()
+                apps = config.storedApps()
                 reloadTargets()
             }
         }
@@ -278,7 +286,7 @@ struct ProfileSettingsSheet: View {
             target = gh.target
             runnerGroup = String(gh.runnerGroupId)
         }
-        appIDs = config.storedAppIDs()
+        apps = config.storedApps()
         reloadTargets()
     }
 
