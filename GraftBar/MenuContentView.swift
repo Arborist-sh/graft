@@ -94,7 +94,7 @@ struct MenuContentView: View {
             ForEach(controller.slots) { slot in
                 HStack(spacing: 7) {
                     Circle()
-                        .fill(Self.phaseColor(slot.phaseKind))
+                        .fill(PhaseStyle.color(slot.phaseKind))
                         .frame(width: 7, height: 7)
                     Text(slot.tag).font(.subheadline)
                     Spacer()
@@ -106,17 +106,6 @@ struct MenuContentView: View {
                 }
                 .help(slot.ip.map { "\(slot.vmName ?? slot.tag) · \($0)" } ?? (slot.vmName ?? slot.tag))
             }
-        }
-    }
-
-    /// Status-dot colour per phase kind.
-    private static func phaseColor(_ kind: String) -> Color {
-        switch kind {
-        case "ready": return .green
-        case "busy": return .blue
-        case "acquiring", "provisioning", "starting", "connected": return .orange
-        case "stopping", "deregistering", "retrying": return .secondary
-        default: return .secondary
         }
     }
 

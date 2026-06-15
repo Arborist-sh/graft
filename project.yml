@@ -44,7 +44,9 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_LSUIElement: YES
+        # Full app now: dock icon + Dashboard window (was LSUIElement/menu-bar-only). The
+        # MenuBarExtra still shows in the menu bar regardless — best of both.
+        INFOPLIST_KEY_LSUIElement: NO
         INFOPLIST_KEY_CFBundleDisplayName: Graft
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Brian Corbin"
         ENABLE_HARDENED_RUNTIME: YES
