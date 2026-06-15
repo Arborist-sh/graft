@@ -107,14 +107,14 @@ struct SeedsView: View {
     @ViewBuilder
     private func compView(_ comp: Comp) -> some View {
         switch comp {
-        case .xcode: fieldRow(comp, $form.xcode, "e.g. 16.2")
-        case .node: fieldRow(comp, $form.node, "e.g. 20")
-        case .ruby: fieldRow(comp, $form.ruby, "e.g. 3.3.0")
-        case .python: fieldRow(comp, $form.python, "e.g. 3.12")
-        case .java: fieldRow(comp, $form.java, "e.g. 21")
-        case .rust: fieldRow(comp, $form.rust, "e.g. stable")
-        case .packageManager: fieldRow(comp, $form.packageManager, "pnpm | yarn | bun")
-        case .cocoapods: fieldRow(comp, $form.cocoapods, "e.g. 1.15.2")
+        case .xcode: fieldRow(comp, $form.xcode, "e.g. 16.2", suggestions: Self.versions(comp))
+        case .node: fieldRow(comp, $form.node, "e.g. 20", suggestions: Self.versions(comp))
+        case .ruby: fieldRow(comp, $form.ruby, "e.g. 3.3.0", suggestions: Self.versions(comp))
+        case .python: fieldRow(comp, $form.python, "e.g. 3.12", suggestions: Self.versions(comp))
+        case .java: fieldRow(comp, $form.java, "e.g. 21", suggestions: Self.versions(comp))
+        case .rust: fieldRow(comp, $form.rust, "e.g. stable", suggestions: Self.versions(comp))
+        case .packageManager: fieldRow(comp, $form.packageManager, "pnpm | yarn | bun", suggestions: Self.versions(comp))
+        case .cocoapods: fieldRow(comp, $form.cocoapods, "e.g. 1.15.2", suggestions: Self.versions(comp))
         case .go, .fastlane, .xcodeFirstLaunch, .podRepoWarm, .cleanup, .disableSpotlight, .disableSleep:
             flagRow(comp)
         case .brew: StringListEditor(title: comp.title, items: $form.brew, prompt: "package", onRemoveBlock: { form.remove(comp) })
@@ -157,9 +157,32 @@ struct SeedsView: View {
 
     // MARK: Builder helpers
 
-    private func fieldRow(_ comp: Comp, _ binding: Binding<String>, _ prompt: String) -> some View {
+    private func fieldRow(_ comp: Comp, _ binding: Binding<String>, _ prompt: String, suggestions: [String] = []) -> some View {
         LabeledContent(comp.title) {
-            HStack(spacing: 6) { TextField("", text: binding, prompt: Text(prompt)); removeX(comp) }
+            HStack(spacing: 6) {
+                TextField("", text: binding, prompt: Text(prompt))
+                if !suggestions.isEmpty {
+                    Menu("") { ForEach(suggestions, id: \.self) { v in Button(v) { binding.wrappedValue = v } } }
+                        .menuStyle(.borderlessButton).fixedSize().help("Common versions")
+                }
+                removeX(comp)
+            }
+        }
+    }
+
+    /// Curated common versions for the dropdown — still freely typeable for anything else.
+    /// (Static, not live: the real catalogs live in the guest's xcodes/fnm/rbenv/pyenv.)
+    static func versions(_ comp: Comp) -> [String] {
+        switch comp {
+        case .xcode: ["16.2", "16.1", "16.0", "15.4", "15.3"]
+        case .node: ["22", "20", "18", "latest"]
+        case .ruby: ["3.4.1", "3.3.6", "3.2.6", "3.1.6"]
+        case .python: ["3.13", "3.12", "3.11", "3.10"]
+        case .java: ["21", "17", "11"]
+        case .rust: ["stable", "nightly", "beta"]
+        case .cocoapods: ["1.16.2", "1.15.2", "1.14.3"]
+        case .packageManager: ["pnpm", "yarn", "bun"]
+        default: []
         }
     }
 
