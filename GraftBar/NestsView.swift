@@ -83,17 +83,26 @@ struct NestsView: View {
 
     private func row(_ nest: TartVM) -> some View {
         let running = nest.state.lowercased() == "running"
+        let s = state(nest)
         return HStack(spacing: 12) {
             Image(systemName: "shippingbox").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(short(nest.name)).font(.body.weight(.medium))
-                Text(nest.state).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    if s.busy { ProgressView().controlSize(.small) }
+                    Text(s.text).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
             }
-            Circle().fill(running ? Color.green : Color.secondary.opacity(0.4)).frame(width: 8, height: 8)
+            Circle().fill(s.color).frame(width: 8, height: 8)
             Spacer()
             Button("Open in VS Code") { openCode(nest) }
                 .disabled(!config.graftAvailable)
                 .help(config.graftAvailable ? "Boot if needed + open VS Code over Remote-SSH" : "Install the graft CLI")
+            Button("Open window") { config.openNestWindow(name: nest.name) }
+                .disabled(running)
+                .help(running ? "Stop the nest first — Tart can't attach a window to a running headless VM"
+                              : "Boot the box in a Tart window (its macOS screen)")
             if running {
                 Button("Stop") { stop(nest.name) }
             }
@@ -102,6 +111,23 @@ struct NestsView: View {
                 .help("Remove nest")
         }
         .padding(.vertical, 4)
+    }
+
+    /// Combine Tart's coarse running/stopped with graft's provisioning status into one line.
+    private func state(_ nest: TartVM) -> (text: String, color: Color, busy: Bool) {
+        let running = nest.state.lowercased() == "running"
+        let status = config.nestStatus(nest.name)
+        if status?.phase == .failed {
+            return ("failed — \(status?.detail ?? "")", .red, false)
+        }
+        guard running else { return ("stopped", .secondary.opacity(0.5), false) }
+        switch status?.phase {
+        case .creating:     return ("creating image…", .orange, true)
+        case .booting:      return ("booting…", .orange, true)
+        case .provisioning: return (status?.detail ?? "provisioning…", .orange, true)
+        case .ready, .none: return ("ready", .green, false)
+        case .failed:       return ("failed", .red, false)
+        }
     }
 
     private var empty: some View {

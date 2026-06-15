@@ -165,14 +165,24 @@ final class ConfigStore: ObservableObject {
         await Task.detached { if let tart = Self.tartPath { _ = Self.capture(tart, ["stop", name]) } }.value
     }
 
-    /// Remove a nest — stop then delete (mirrors `graft nest rm`).
+    /// Remove a nest — stop then delete (mirrors `graft nest rm`), and drop its status file.
     func removeNest(_ name: String) async {
         await Task.detached {
             guard let tart = Self.tartPath else { return }
             _ = Self.capture(tart, ["stop", name])
             _ = Self.capture(tart, ["delete", name])
+            NestStatusStore.clear(name)
         }.value
     }
+
+    /// Provisioning status for a nest (creating → booting → cloning → ready), written by
+    /// `graft nest`. Nil for boxes made before status tracking, or once cleared.
+    func nestStatus(_ name: String) -> NestStatus? { NestStatusStore.read(name) }
+
+    /// Open the VM's graphical screen in a Tart window: `tart run <name>` (with graphics).
+    /// Only valid from a stopped box — Tart is one-process-per-VM, so you can't attach a
+    /// window to one already running headless under graft.
+    func openNestWindow(name: String) { Self.launchDetached(Self.tartPath, ["run", name]) }
 
     /// Whether the `graft` CLI is available — needed to open/create nests (it owns the
     /// boot + Remote-SSH dance). List/stop/remove work without it (pure `tart`).
@@ -198,10 +208,13 @@ final class ConfigStore: ObservableObject {
 
     /// Fire-and-forget a `graft` subcommand (detached; we don't wait). Used for the
     /// long-running, self-contained nest open/create flows.
-    nonisolated private static func launchGraft(_ args: [String]) {
-        guard let graft = graftPath else { return }
+    nonisolated private static func launchGraft(_ args: [String]) { launchDetached(graftPath, args) }
+
+    /// Launch a binary detached (no wait, output discarded) with a sane PATH.
+    nonisolated private static func launchDetached(_ path: String?, _ args: [String]) {
+        guard let path else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: graft)
+        p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
