@@ -1,14 +1,23 @@
 import SwiftUI
 import AppKit
 
-/// Graft Bar — the menu-bar companion to the `graft` daemon. Menu-bar only
-/// (LSUIElement, no dock icon); built window-ready so a dashboard window can be
-/// added later as another Scene.
+/// Graft — the desktop + menu-bar companion to the `graft` daemon. A full **Dashboard
+/// window** (mission control) plus a **menu-bar extra** for quick start/stop, both driven
+/// by one shared `GraftController`.
 @main
 struct GraftBarApp: App {
     @StateObject private var controller = GraftController()
 
     var body: some Scene {
+        // The main window — a sidebar app (Dashboard + config sections). Single window
+        // (reopen from the Dock or Window menu); shares the controller with the menu-bar
+        // extra below.
+        Window("Graft", id: "dashboard") {
+            RootView(controller: controller)
+        }
+        .defaultSize(width: 860, height: 520)
+
+        // Quick controls without leaving whatever you're doing.
         MenuBarExtra {
             MenuContentView(controller: controller)
         } label: {
@@ -19,6 +28,9 @@ struct GraftBarApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        // Preferences (⌘,) — vocabulary chooser for now.
+        Settings { SettingsView() }
     }
 
     /// The graft mark as a template image — macOS tints it for the light/dark bar.

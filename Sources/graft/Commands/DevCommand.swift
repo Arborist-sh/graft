@@ -110,12 +110,23 @@ extension Dev {
                 printErr("⚠ \(running.count) other graft VM(s) running — at the macOS 2-VM limit; this may fail to boot.")
             }
 
+            // Provisioning status, written for the GUI — Tart's "running" flips the instant
+            // the VM boots, well before the repo is cloned, so the GUI needs a finer signal.
+            func mark(_ phase: NestStatus.Phase, _ detail: String) {
+                NestStatusStore.write(NestStatus(phase: phase, detail: detail), for: vmName)
+            }
+            // Once the box is provisioned it's usable (Shell works) even if the *connect*
+            // step (VS Code) fails — so a post-ready error must not flip it to "failed".
+            var reachedReady = false
+
+            do {
             // 4) Create the box from an image if it doesn't exist, then boot it.
             let existing = try await Tart.list().first { $0.name == vmName }
             if existing == nil {
                 guard needsImage else { throw GraftError("no dev box '\(vmName)'") }
                 let img: String
                 if let image { img = image } else { img = await ImagePicker.resolve() }
+                mark(.creating, "creating from \(img)")
                 try await Tart.ensureAvailable(img)
                 printErr("creating \(vmName) from \(img)…")
                 try await Tart.clone(image: img, to: vmName)
@@ -123,6 +134,7 @@ extension Dev {
             let net = try network.map { try VMNetwork(spec: $0) } ?? .nat
             if existing?.isRunning != true {
                 printErr("booting \(vmName) — a fresh first boot can take ~60–90s, don't cancel…")
+                mark(.booting, "booting (first boot can take ~60–90s)")
                 try Tart.run(name: vmName, mounts: mounts, network: net)
                 try await provider.waitForGuest(RunningVM(name: vmName, ip: "", os: .macOS), timeout: .seconds(180))
                 printErr("  guest is up.")
@@ -132,6 +144,7 @@ extension Dev {
             let isClone: Bool = { if case .clone = source { return true } else { return false } }()
             var vm = RunningVM(name: vmName, ip: "", os: .macOS)
             if isClone || openInCode {
+                mark(.provisioning, "setting up SSH access")
                 let ip = try await Tart.waitForIP(name: vmName)
                 vm = RunningVM(name: vmName, ip: ip, os: .macOS)
                 printErr("setting up SSH access…")
@@ -146,6 +159,7 @@ extension Dev {
             switch source {
             case .clone(let url, let repoName):
                 printErr("cloning \(url) into the VM (or reusing the existing checkout)…")
+                mark(.provisioning, "cloning \(url)")
                 guestPath = try await DevCode.cloneRepo(url: url, ref: ref, repoName: repoName, alias: vmName)
             case .resume(let box):
                 let slug = box.replacingOccurrences(of: "graft-dev-", with: "")
@@ -155,6 +169,9 @@ extension Dev {
             case .scratch:
                 guestPath = "$HOME"
             }
+
+            mark(.ready, "ready")
+            reachedReady = true
 
             // 7) Connect. VS Code can't tear down on close, so code mode is always persistent;
             // shell mode tears down ephemeral (mount/scratch/--ephemeral) boxes on exit.
@@ -173,6 +190,10 @@ extension Dev {
             let exit = try Tart.execInteractive(
                 name: vmName, command: Self.shell(cd: cd, run: command), interactive: command.isEmpty)
             try await Self.finish(source: source, ephemeralFlag: ephemeral, vmName: vmName, exit: exit)
+            } catch {
+                if !reachedReady { mark(.failed, "\(error)") }
+                throw error
+            }
         }
 
         /// Map a target string to a source: `.` → mount, slash/URL → clone, else resume a box.
@@ -260,6 +281,7 @@ extension Dev {
             }
             try? await Tart.stop(name: target)
             try await Tart.delete(name: target)
+            NestStatusStore.clear(target)
             printErr("✓ removed \(target)")
         }
     }

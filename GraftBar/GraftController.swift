@@ -121,7 +121,7 @@ final class GraftController: ObservableObject {
             return
         }
         DispatchQueue.global(qos: .utility).async {
-            let names = Self.capture(graft, ["vm", "list"])
+            let names = Self.capture(graft, ["leaf", "list"])
                 .split(separator: "\n")
                 .compactMap { line -> String? in
                     let name = String(line.split(separator: "\t").first ?? "")
@@ -140,7 +140,7 @@ final class GraftController: ObservableObject {
         let names = orphans
         actionNote = "Removing \(names.count) orphan VM\(names.count == 1 ? "" : "s")…"
         DispatchQueue.global(qos: .userInitiated).async {
-            for name in names { _ = Self.capture(graft, ["vm", "delete", name]) }
+            for name in names { _ = Self.capture(graft, ["leaf", "rm", name]) }
             DispatchQueue.main.async { [weak self] in
                 self?.actionNote = nil
                 self?.refreshOrphans()
@@ -186,7 +186,19 @@ final class GraftController: ObservableObject {
     /// clamping — the same number the supervisor will launch.
     private func currentTarget() -> Int {
         guard let name = activeProfile, let config = try? Profiles.load(name) else { return 0 }
-        return config.plannedRunnerCount { LocalTartProvider.hostCapacity(for: $0) }
+        // The supervisor now spawns one slot per desired runner and fills toward the host's
+        // per-OS capacity (elastic, GFT-18). Predict how many will actually boot for the
+        // progress note by clamping each pool to the remaining host capacity for its OS.
+        var budget: [GuestOS: Int] = [:]
+        for os in GuestOS.allCases { budget[os] = LocalTartProvider.hostCapacity(for: os) }
+        var total = 0
+        for pool in config.pools {
+            let available = budget[pool.os] ?? 0
+            let n = min(pool.count, available)
+            budget[pool.os] = available - n
+            total += n
+        }
+        return total
     }
 
     // MARK: Process plumbing

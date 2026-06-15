@@ -64,8 +64,9 @@ public struct KeychainSecretStore: SecretStore {
     // MARK: Write / manage (used by `graft secrets`)
 
     /// Upsert the PEM for an App. Deletes any existing item first so re-importing
-    /// is idempotent.
-    public func store(pem: String, forAppID appID: Int) throws {
+    /// is idempotent. An optional `name` (the GitHub App's display name) is stashed in the
+    /// item's comment attribute, so it can be read back without unlocking the key data.
+    public func store(pem: String, forAppID appID: Int, name: String? = nil) throws {
         try remove(appID: appID)
         var attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -74,12 +75,21 @@ public struct KeychainSecretStore: SecretStore {
             kSecAttrLabel as String: "Graft GitHub App \(appID) private key",
             kSecValueData as String: Data(pem.utf8),
         ]
+        if let name, !name.isEmpty { attributes[kSecAttrComment as String] = name }
         applyWriteScope(to: &attributes)
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw keychainError("write", status)
         }
+    }
+
+    /// Set/replace (or, with nil, clear) the stored display name for an App that already
+    /// has a key — re-reads the PEM and rewrites the item. Used to backfill names from
+    /// GitHub, and to clear a misleading name when a key turns out not to match its ID.
+    public func setName(_ name: String?, forAppID appID: Int) async throws {
+        let pem = try await privateKeyPEM(forAppID: appID)
+        try store(pem: pem, forAppID: appID, name: name)
     }
 
     /// Remove the PEM for an App. No-op if absent.
@@ -97,8 +107,21 @@ public struct KeychainSecretStore: SecretStore {
         }
     }
 
+    /// An App with a key in the keychain, plus its display name if one was stored.
+    public struct StoredApp: Sendable, Equatable {
+        public let id: Int
+        public let name: String?
+        public init(id: Int, name: String?) { self.id = id; self.name = name }
+    }
+
     /// App IDs that currently have a key in this keychain.
     public func storedAppIDs() throws -> [Int] {
+        try storedApps().map(\.id)
+    }
+
+    /// Apps with a key in this keychain, each with its stored display name (if any).
+    /// Attribute-only read — does not unlock the key data, so it never prompts.
+    public func storedApps() throws -> [StoredApp] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -113,9 +136,11 @@ public struct KeychainSecretStore: SecretStore {
         guard status == errSecSuccess, let array = items as? [[String: Any]] else {
             throw keychainError("list", status)
         }
-        return array
-            .compactMap { ($0[kSecAttrAccount as String] as? String).flatMap(Int.init) }
-            .sorted()
+        return array.compactMap { attrs -> StoredApp? in
+            guard let id = (attrs[kSecAttrAccount as String] as? String).flatMap(Int.init) else { return nil }
+            let name = attrs[kSecAttrComment as String] as? String
+            return StoredApp(id: id, name: (name?.isEmpty ?? true) ? nil : name)
+        }.sorted { $0.id < $1.id }
     }
 
     // MARK: Orchard service-account token (GFT-11)
@@ -140,6 +165,40 @@ public struct KeychainSecretStore: SecretStore {
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Whether an Orchard token is stored for this account — an attribute-only existence
+    /// check, so it never prompts (unlike `orchardToken`, which reads the secret data).
+    public func hasOrchardToken(account: String) -> Bool {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        applySearchScope(to: &query)
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+    }
+
+    /// Service-account names that have an Orchard token stored. Attribute-only read, so it
+    /// never prompts — used to offer "reuse a token you already have" in the profile editor.
+    public func storedOrchardAccounts() throws -> [String] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.orchardTokenService,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        applySearchScope(to: &query)
+        var items: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &items)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let array = items as? [[String: Any]] else {
+            throw keychainError("list", status)
+        }
+        return array.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
     }
 
     /// Upsert the Orchard token for a service account (idempotent: delete then add).

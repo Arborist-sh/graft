@@ -113,6 +113,56 @@ public struct GitHubAppClient: Sendable {
         return nil
     }
 
+    /// The authenticated App's own identity (`GET /app`) — its numeric id, URL slug, and
+    /// human display name. Used to label stored keys by name instead of a bare number.
+    public struct AppInfo: Sendable, Decodable {
+        public let id: Int
+        public let slug: String
+        public let name: String
+    }
+
+    public func appInfo() async throws -> AppInfo {
+        let jwt = try await appJWT()
+        let data = try await request("GET", path: "app", bearer: jwt)
+        return try Self.snakeDecoder.decode(AppInfo.self, from: data)
+    }
+
+    /// Look up a GitHub App by its URL slug — the **public** `GET /apps/{slug}` endpoint,
+    /// no auth or key needed. Lets graft resolve the App ID + name from a downloaded key
+    /// file (named `‹slug›.‹date›.private-key.pem`) so importing doesn't mean typing them.
+    public static func publicAppInfo(
+        slug: String,
+        apiBase: URL = URL(string: "https://api.github.com")!
+    ) async throws -> AppInfo {
+        guard let url = URL(string: apiBase.absoluteString + "/apps/\(slug)") else {
+            throw GraftError("bad app slug: \(slug)")
+        }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        req.setValue("graft", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw GraftError("couldn't look up App “\(slug)” on GitHub")
+        }
+        return try snakeDecoder.decode(AppInfo.self, from: data)
+    }
+
+    /// One installation of this App, with the account it's installed on.
+    public struct Installation: Sendable, Decodable {
+        public let id: Int
+        public let account: Account
+        public struct Account: Sendable, Decodable { public let login: String }
+    }
+
+    /// Every account this App is currently installed on. Empty for a brand-new App until
+    /// the user installs it — which is how the create flow detects "installation done".
+    public func installations() async throws -> [Installation] {
+        let jwt = try await appJWT()
+        let data = try await request("GET", path: "app/installations?per_page=100", bearer: jwt)
+        return try Self.snakeDecoder.decode([Installation].self, from: data)
+    }
+
     /// Targets this App can actually reach: `org:<login>` for every org the App is
     /// installed on, plus `repo:<owner>/<name>` for every accessible repo. Powers the
     /// setup wizard's target picker so you select a valid target instead of retyping.
@@ -123,8 +173,11 @@ public struct GitHubAppClient: Sendable {
             let account: Account
             struct Account: Decodable { let login: String; let type: String }
         }
-        let instData = try await request("GET", path: "app/installations", bearer: jwt)
-        let installations = try Self.snakeDecoder.decode([Installation].self, from: instData)
+        // Paginate — GitHub caps a page at 100 and defaults to 30; an App on a big org
+        // can have far more than one page of installations or repos.
+        let installations = try await paged("app/installations", bearer: jwt) {
+            try Self.snakeDecoder.decode([Installation].self, from: $0)
+        }
 
         var targets: [String] = []
         for inst in installations {
@@ -132,17 +185,39 @@ public struct GitHubAppClient: Sendable {
                 targets.append("org:\(inst.account.login)")
             }
             // Repos need an installation token (the App JWT can't read them directly).
-            guard let token = try? await installationToken(installationID: inst.id),
-                  let repoData = try? await request("GET", path: "installation/repositories", bearer: token)
-            else { continue }
+            guard let token = try? await installationToken(installationID: inst.id) else { continue }
             struct Repos: Decodable {
                 let repositories: [Repo]
                 struct Repo: Decodable { let fullName: String }
             }
-            let repos = (try? Self.snakeDecoder.decode(Repos.self, from: repoData))?.repositories ?? []
+            let repos = (try? await paged("installation/repositories", bearer: token) {
+                try Self.snakeDecoder.decode(Repos.self, from: $0).repositories
+            }) ?? []
             targets.append(contentsOf: repos.map { "repo:\($0.fullName)" })
         }
         return targets
+    }
+
+    /// Fetch every page of a paginated GitHub list endpoint, accumulating decoded items.
+    /// Walks `?per_page=100&page=N`, stopping on the first short (< 100) page; capped at
+    /// 50 pages (5k items) as a runaway guard. `extract` pulls the items out of one page
+    /// (a bare array for `app/installations`, the `repositories` field for repos).
+    private func paged<Item>(
+        _ path: String,
+        bearer: String,
+        extract: (Data) throws -> [Item]
+    ) async throws -> [Item] {
+        var items: [Item] = []
+        let sep = path.contains("?") ? "&" : "?"
+        var page = 1
+        while page <= 50 {
+            let data = try await request("GET", path: "\(path)\(sep)per_page=100&page=\(page)", bearer: bearer)
+            let batch = try extract(data)
+            items.append(contentsOf: batch)
+            if batch.count < 100 { break }
+            page += 1
+        }
+        return items
     }
 
     /// Mint an installation token straight from an installation id (the

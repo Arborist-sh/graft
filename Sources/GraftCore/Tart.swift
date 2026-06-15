@@ -99,7 +99,9 @@ public enum Tart {
     /// code. `interactive` adds `tart exec -i` to forward stdin — needed for a shell,
     /// but it blocks on a non-TTY stdin, so omit it for one-shot commands.
     public static func execInteractive(name: String, command: [String], interactive: Bool = true) throws -> Int32 {
-        let base = interactive ? ["exec", "-i", name] : ["exec", name]
+        // Interactive needs BOTH `-i` (attach stdin) and `-t` (allocate a guest PTY) — with
+        // `-i` alone the guest shell has no controlling terminal and exits immediately.
+        let base = interactive ? ["exec", "-i", "-t", name] : ["exec", name]
         return try Shell.runInteractive(executable, base + command)
     }
 
