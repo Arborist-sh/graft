@@ -12,6 +12,7 @@ struct EditTarget: Identifiable { let id = UUID(); let name: String }
 struct ProfilesView: View {
     @ObservedObject var config: ConfigStore
     @ObservedObject var controller: GraftController
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     @State private var creating = false
     @State private var newName = ""
@@ -21,7 +22,7 @@ struct ProfilesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Profiles").font(.title2.weight(.semibold))
+                Text(Lex.profiles(vocab)).font(.title2.weight(.semibold))
                 Spacer()
                 Button { revealProfilesFolder() } label: {
                     Label("Show in Finder", systemImage: "folder")

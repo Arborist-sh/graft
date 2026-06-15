@@ -6,6 +6,7 @@ import GraftCore
 /// edit / remove pools; each save rewrites that profile's config.
 struct PoolsView: View {
     @ObservedObject var config: ConfigStore
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
     @State private var cfg: GraftConfig?
     @State private var draft: PoolDraft?
 
@@ -24,7 +25,7 @@ struct PoolsView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Pools").font(.title2.weight(.semibold))
+            Text(Lex.pools(vocab)).font(.title2.weight(.semibold))
             if !config.profiles.isEmpty {
                 Picker("", selection: Binding(
                     get: { config.selected ?? "" },

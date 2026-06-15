@@ -10,6 +10,7 @@ import AppKit
 struct SecretsView: View {
     @ObservedObject var config: ConfigStore
 
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
     @State private var apps: [KeychainSecretStore.StoredApp] = []
     @State private var importing = false
     @State private var creatingApp = false
@@ -28,7 +29,7 @@ struct SecretsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Secrets").font(.title2.weight(.semibold))
+                Text(Lex.secrets(vocab)).font(.title2.weight(.semibold))
                 Spacer()
                 Text("login keychain").font(.caption).foregroundStyle(.secondary)
             }

@@ -8,6 +8,7 @@ import GraftCore
 /// profiles — local-Tart profiles get a friendly nudge to the Dashboard instead.
 struct ForestView: View {
     @ObservedObject var config: ConfigStore
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     @State private var report: OrchardProvider.FleetReport?
     @State private var leaves: [String] = []
@@ -38,7 +39,7 @@ struct ForestView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Canopy").font(.title2.weight(.semibold))
+            Text(Lex.forest(vocab)).font(.title2.weight(.semibold))
             if !config.profiles.isEmpty {
                 Picker("", selection: Binding(
                     get: { config.selected ?? "" },
@@ -70,7 +71,7 @@ struct ForestView: View {
         if selected == nil {
             empty("No profile", "Create a profile first, over in the Profiles tab.")
         } else if !isOrchard {
-            empty("Local Tart profile", "“\(selected ?? "")” runs VMs on this Mac — watch it live on the Dashboard. The canopy is for Orchard fleets.")
+            empty("Local Tart profile", "“\(selected ?? "")” runs \(Lex.vms(vocab)) on this Mac — watch it live on \(Lex.dashboard(vocab)). \(Lex.forest(vocab)) is for Orchard fleets.")
         } else if let error, report == nil {
             unreachable(error)
         } else if let report {
@@ -100,7 +101,7 @@ struct ForestView: View {
             HStack(spacing: 10) {
                 Image(systemName: "sailboat").font(.title3).foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Trunk").font(.headline)
+                    Text(Lex.controller(vocab)).font(.headline)
                     Text(r.controllerURL).font(.callout.monospaced()).foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -143,7 +144,7 @@ struct ForestView: View {
         return card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Label("Branches", systemImage: "laptopcomputer").font(.headline)
+                    Label(Lex.workers(vocab), systemImage: "laptopcomputer").font(.headline)
                     Spacer()
                     Text(branchSummary(count: r.workers.count, stale: stale, paused: paused))
                         .font(.caption).foregroundStyle(.secondary)
@@ -169,7 +170,7 @@ struct ForestView: View {
             if let age = w.lastSeenAge {
                 Text("seen \(ageString(age)) ago").font(.caption).foregroundStyle(.secondary)
             }
-            Text("\(w.slots) leaf\(w.slots == 1 ? "" : "es")")
+            Text("\(w.slots) \(w.slots == 1 ? Lex.vm(vocab) : Lex.vms(vocab))")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(width: 64, alignment: .trailing)
             Text(branchState(w))
@@ -185,13 +186,13 @@ struct ForestView: View {
         card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Label("Leaves", systemImage: "leaf").font(.headline)
+                    Label(Lex.vms(vocab), systemImage: "leaf").font(.headline)
                     Spacer()
-                    Text("\(r.graftVMNames.count) graft leaf\(r.graftVMNames.count == 1 ? "" : "es")")
+                    Text("\(r.graftVMNames.count) graft \(r.graftVMNames.count == 1 ? Lex.vm(vocab) : Lex.vms(vocab))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if r.graftVMNames.isEmpty {
-                    Text("No leaves from this profile right now.")
+                    Text("No \(Lex.vms(vocab)) from this profile right now.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 } else {
                     ForEach(r.graftVMNames, id: \.self) { name in
@@ -250,7 +251,7 @@ struct ForestView: View {
     }
 
     private func branchSummary(count: Int, stale: Int, paused: Int) -> String {
-        var parts = ["\(count) branch\(count == 1 ? "" : "es")"]
+        var parts = ["\(count) \(count == 1 ? Lex.worker(vocab) : Lex.workers(vocab))"]
         if stale > 0 { parts.append("\(stale) stale") }
         if paused > 0 { parts.append("\(paused) paused") }
         return parts.joined(separator: " · ")

@@ -7,6 +7,7 @@ import GraftCore
 /// both reflect the same daemon state (refreshed every 3s from the state file).
 struct DashboardView: View {
     @ObservedObject var controller: GraftController
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     /// Ticks once a second so the Age column counts up live between the controller's
     /// 3s state refreshes.
@@ -39,7 +40,7 @@ struct DashboardView: View {
                     .font(.title3.weight(.semibold))
                 if controller.isRunning {
                     let n = controller.slots.count
-                    Text("· \(n) \(n == 1 ? "leaf" : "leaves")")
+                    Text("· \(n) \(n == 1 ? Lex.vm(vocab) : Lex.vms(vocab))")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -123,7 +124,7 @@ struct DashboardView: View {
                 if !controller.orphans.isEmpty { orphanBanner.padding(.horizontal, 40) }
             }
         } else if controller.slots.isEmpty {
-            emptyState("No leaves yet",
+            emptyState("No \(Lex.vms(vocab)) yet",
                        controller.actionNote ?? "Waiting for the supervisor to schedule runners…") {
                 symbolIcon("hourglass")
             }
@@ -140,7 +141,7 @@ struct DashboardView: View {
             .width(18)
             TableColumn("Slot", value: \.tag).width(min: 70, ideal: 90)
             TableColumn("Pool", value: \.pool).width(min: 70, ideal: 90)
-            TableColumn("Leaf") { slot in
+            TableColumn(Lex.vm(vocab)) { slot in
                 Text(PhaseStyle.shortLeaf(slot.vmName)).foregroundStyle(.secondary).monospaced()
             }
             .width(min: 80, ideal: 90)

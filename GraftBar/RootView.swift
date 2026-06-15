@@ -6,13 +6,13 @@ enum AppSection: String, CaseIterable, Identifiable {
     case dashboard, forest, profiles, pools, secrets
     var id: String { rawValue }
 
-    var title: String {
+    func title(_ vocab: Vocabulary) -> String {
         switch self {
-        case .dashboard: return "Dashboard"
-        case .forest:    return "Forest"
-        case .profiles:  return "Profiles"
-        case .pools:     return "Pools"
-        case .secrets:   return "Secrets"
+        case .dashboard: return Lex.dashboard(vocab)
+        case .forest:    return Lex.forest(vocab)
+        case .profiles:  return Lex.profiles(vocab)
+        case .pools:     return Lex.pools(vocab)
+        case .secrets:   return Lex.secrets(vocab)
         }
     }
 
@@ -33,12 +33,13 @@ struct RootView: View {
     @ObservedObject var controller: GraftController
     @StateObject private var config = ConfigStore()
     @State private var section: AppSection? = .dashboard
+    @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
                 ForEach(AppSection.allCases) { item in
-                    Label(item.title, systemImage: item.symbol).tag(item)
+                    Label(item.title(vocab), systemImage: item.symbol).tag(item)
                 }
             }
             .navigationSplitViewColumnWidth(min: 168, ideal: 188, max: 240)

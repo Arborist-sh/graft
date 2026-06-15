@@ -28,6 +28,9 @@ struct GraftBarApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        // Preferences (⌘,) — vocabulary chooser for now.
+        Settings { SettingsView() }
     }
 
     /// The graft mark as a template image — macOS tints it for the light/dark bar.
