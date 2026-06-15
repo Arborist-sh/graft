@@ -9,6 +9,9 @@ import GraftCore
 /// compiled provisioning script; Grow builds the sapling.
 struct SeedsView: View {
     @ObservedObject var config: ConfigStore
+    /// Persists the editor's content across section switches (the view itself is destroyed
+    /// when you navigate away, so its @State would reset — this holds the snapshot).
+    let store: SeedEditorModel
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     enum Mode: String { case form, raw }
@@ -33,8 +36,24 @@ struct SeedsView: View {
             Group { if mode == .form { formEditor } else { rawEditor } }
         }
         .task { images = await config.localImages() }
+        .onAppear { restore() }
+        .onDisappear { snapshot() }
         .sheet(isPresented: $rendering) { RenderSheet(script: renderOutput) }
         .sheet(isPresented: $showInspect) { InspectSheet(image: form.from, report: inspectOutput) }
+    }
+
+    /// Restore the editor from the persisted snapshot when returning to this section.
+    private func restore() {
+        guard store.loaded else { return }
+        mode = store.mode; text = store.text; form = store.form
+        path = store.path; dirty = store.dirty; status = store.status
+    }
+
+    /// Snapshot the editor when leaving the section, so coming back resumes where you were.
+    private func snapshot() {
+        store.mode = mode; store.text = text; store.form = form
+        store.path = path; store.dirty = dirty; store.status = status
+        store.loaded = true
     }
 
     // MARK: Header
@@ -461,6 +480,18 @@ struct RepoEditor: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+/// Holds the Seeds editor's content between visits. Owned by RootView (@StateObject) so it
+/// outlives the view, which is recreated each time you navigate back to the section.
+final class SeedEditorModel: ObservableObject {
+    var loaded = false
+    var mode: SeedsView.Mode = .form
+    var text = ""
+    var form = RecipeForm()
+    var path: String?
+    var dirty = false
+    var status: String?
 }
 
 /// Read-only preview of the provisioning script a seed compiles to.
