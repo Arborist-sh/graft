@@ -112,7 +112,7 @@ struct DashboardView: View {
     private var content: some View {
         if !controller.graftInstalled {
             emptyState("graft CLI not found",
-                       "Install the graft CLI (brew install briancorbin/tap/graft) to get going.") {
+                       "Install the graft CLI (brew install arborist-sh/tap/graft) to get going.") {
                 symbolIcon("exclamationmark.triangle")
             }
         } else if !controller.isRunning {
