@@ -42,8 +42,12 @@ public struct ImageBuilder: Sendable {
     /// untouched (the build happens on a throwaway clone first).
     /// `scriptBody`, if given (the contents of the recipe's `script:` file), runs before
     /// the inline `run` steps in the same guest shell.
+    /// `repoToken`, if given, mints a short-lived GitHub App installation token for a `repos:`
+    /// URL so a private repo's cache-warming clone authenticates as graft's App — no deploy key.
+    /// Returns nil per-repo to fall back to an anonymous clone (public repos, or no App access).
     public func build(
         _ recipe: ImageRecipe, scriptBody: String? = nil,
+        repoToken: (@Sendable (String) async -> String?)? = nil,
         onLine: (@Sendable (String) -> Void)? = nil
     ) async throws {
         await sweepOrphans()                          // clear leftovers from prior failed builds
@@ -59,7 +63,16 @@ public struct ImageBuilder: Sendable {
             try await provider.waitForGuest(vm, timeout: .seconds(180))
             Log.info("guest is up — running provisioning steps:")
 
-            if let provisioning = recipe.provisioning(scriptBody: scriptBody) {
+            // Mint App tokens for private repo precaches (skip ones with an explicit ssh-key).
+            // A nil result means anonymous clone — fine for public repos.
+            var repoTokens: [String: String] = [:]
+            if let repoToken, let repos = recipe.repos {
+                for r in repos where r.sshKey == nil {
+                    if let token = await repoToken(r.url) { repoTokens[r.url] = token }
+                }
+            }
+
+            if let provisioning = recipe.provisioning(scriptBody: scriptBody, repoTokens: repoTokens) {
                 let exit = try await provider.execStreaming(
                     on: vm, script: provisioning, onLine: onLine)
                 guard exit == 0 else { throw GraftError("image build step failed (exit \(exit))") }

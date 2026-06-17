@@ -217,6 +217,52 @@ struct ImageRecipeTests {
         #expect(r.repos?.first?.run.count == 2)
     }
 
+    @Test("repos: with an App token clones over https via http.extraheader (raw token never appears)")
+    func reposAppToken() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","ref":"main","run":["yarn install"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let token = "ghs_TESTTOKEN123"
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["https://github.com/org/app.git": token]))
+        let b64 = Data("x-access-token:\(token)".utf8).base64EncodedString()
+
+        // Token rides in a command-scoped http.extraheader (like actions/checkout), over https.
+        #expect(p.contains("git -c http.extraheader='AUTHORIZATION: basic \(b64)' clone --depth 1 --branch 'main' 'https://github.com/org/app.git'"))
+        #expect(!p.contains("git clone --depth 1"))   // not the anonymous form
+        #expect(!p.contains(token))                    // raw token never written, only base64'd in the header
+        #expect(p.contains("yarn install"))
+        #expect(p.contains("rm -rf \"$_graft_pc\""))   // source still discarded
+    }
+
+    @Test("an explicit ssh-key takes precedence over an App token")
+    func sshKeyBeatsToken() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"git@github.com:org/app.git","ssh-key":"/Volumes/My Shared Files/id","run":["yarn install"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["git@github.com:org/app.git": "tok"]))
+        #expect(p.contains("GIT_SSH_COMMAND='ssh -i /Volumes/My Shared Files/id -o IdentitiesOnly=yes'"))
+        #expect(p.contains("git clone --depth 1 'git@github.com:org/app.git'"))
+        #expect(!p.contains("http.extraheader"))       // token path not taken when ssh-key is set
+    }
+
+    @Test("a repo with no token and no ssh-key clones anonymously")
+    func reposAnonymous() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/octocat/Hello-World.git","run":["echo hi"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))   // no tokens supplied
+        #expect(p.contains("git clone --depth 1 'https://github.com/octocat/Hello-World.git'"))
+        #expect(!p.contains("http.extraheader"))
+    }
+
+    @Test("githubSlug parses owner/name from https + ssh urls, nil for other hosts")
+    func githubSlug() {
+        func slug(_ u: String) -> String? { ImageRecipe.githubSlug(from: u).map { "\($0.owner)/\($0.name)" } }
+        #expect(slug("https://github.com/org/app.git") == "org/app")
+        #expect(slug("https://github.com/org/app") == "org/app")
+        #expect(slug("git@github.com:org/app.git") == "org/app")
+        #expect(slug("ssh://git@github.com/org/app.git") == "org/app")
+        #expect(slug("https://gitlab.com/org/app.git") == nil)
+        #expect(slug("not a url") == nil)
+    }
+
     @Test("parses VM network specs and decodes them from a recipe")
     func network() throws {
         #expect(try VMNetwork(spec: "nat").tartFlags == [])

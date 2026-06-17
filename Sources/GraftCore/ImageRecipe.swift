@@ -294,14 +294,17 @@ public struct ImageRecipe: Codable, Sendable {
 
     /// The full provisioning script for the guest, or nil if there's nothing to do.
     /// Order: env → toolchain → system config → script → run → prefetch → verify → cleanup.
-    public func provisioning(scriptBody: String?) -> String? {
+    /// `repoTokens` maps a `repos:` entry's `url` to a short-lived GitHub App installation
+    /// token; a private github.com repo with a token (and no explicit `ssh-key`) clones over
+    /// HTTPS with it. Empty by default — public repos and the ssh-key path are unaffected.
+    public func provisioning(scriptBody: String?, repoTokens: [String: String] = [:]) -> String? {
         var work = envSteps + compiledSteps + systemSteps
         if let scriptBody, !scriptBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             work.append(scriptBody)
         }
         work.append(contentsOf: run)
         work.append(contentsOf: prefetchSteps)
-        work.append(contentsOf: repoPrecacheSteps)
+        work.append(contentsOf: repoPrecacheSteps(tokens: repoTokens))
         work.append(contentsOf: verifySteps)
         work.append(contentsOf: cleanupSteps)
         guard !work.isEmpty else { return nil }   // nothing to provision
@@ -467,19 +470,48 @@ public struct ImageRecipe: Codable, Sendable {
 
     /// Clone each repo into a throwaway dir, run its install commands to warm the global
     /// caches, then delete the working tree — only the `$HOME` caches survive into the image.
-    var repoPrecacheSteps: [String] {
+    /// `tokens` maps a repo URL to a GitHub App installation token for the HTTPS-auth path.
+    func repoPrecacheSteps(tokens: [String: String]) -> [String] {
         guard let repos, !repos.isEmpty else { return [] }
-        return repos.map { Self.repoStep($0) }
+        return repos.map { Self.repoStep($0, token: tokens[$0.url]) }
     }
 
-    private static func repoStep(_ r: PrecacheRepo) -> String {
+    /// Parse `owner/name` out of a github.com clone URL — both `https://github.com/owner/repo(.git)`
+    /// and the scp-style `git@github.com:owner/repo(.git)`. Returns nil for non-github hosts or
+    /// unparseable URLs, in which case the precache clones anonymously (fine for public repos).
+    public static func githubSlug(from url: String) -> (owner: String, name: String)? {
+        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        guard let host = trimmed.range(of: "github.com") else { return nil }
+        var rest = String(trimmed[host.upperBound...])
+        while let first = rest.first, first == ":" || first == "/" { rest.removeFirst() }
+        if rest.hasSuffix(".git") { rest.removeLast(4) }
+        let parts = rest.split(separator: "/").map(String.init)
+        guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return (parts[0], parts[1])
+    }
+
+    private static func repoStep(_ r: PrecacheRepo, token: String?) -> String {
         var lines = ["echo \"==> Pre-caching \(r.url) (warm caches; source discarded)\""]
+        // An explicit ssh-key wins; otherwise, if we have an App token for a github.com repo,
+        // clone over HTTPS with it. Neither → anonymous (public repos).
+        let slug = githubSlug(from: r.url)
+        let useToken = token != nil && r.sshKey == nil && slug != nil
         if let key = r.sshKey {
             lines.append("export GIT_SSH_COMMAND=\(shq("ssh -i \(key) -o IdentitiesOnly=yes"))")
         }
         lines.append("_graft_pc=\"$(mktemp -d)\"")
         let branch = r.ref.map { " --branch \(Self.shq($0))" } ?? ""
-        lines.append("git clone --depth 1\(branch) \(Self.shq(r.url)) \"$_graft_pc\"")
+        if useToken, let token, let slug {
+            // Inject the token as an http.extraheader via `git -c` (command-scoped — NOT written
+            // into the cloned repo's config), the same mechanism actions/checkout uses. The token
+            // is short-lived (~1h) and the working tree is discarded, so nothing auth-bearing bakes
+            // into the image. Reconstruct an https URL from the slug so an ssh-form url still works.
+            let header = "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
+            let url = "https://github.com/\(slug.owner)/\(slug.name).git"
+            lines.append("git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(url)) \"$_graft_pc\"")
+        } else {
+            lines.append("git clone --depth 1\(branch) \(Self.shq(r.url)) \"$_graft_pc\"")
+        }
         if !r.run.isEmpty {
             lines.append("(")
             lines.append("  cd \"$_graft_pc\"")
@@ -678,6 +710,17 @@ public struct ImageRecipe: Codable, Sendable {
         # cpu: 8
         # memory: 16384            # megabytes
         # disk: 120                # GB (grow-only)
+
+        # ── Warm dependency caches (optional) ──────────────────────
+        # Clone a repo just to warm the global package caches, then discard the source —
+        # so a runner's first `yarn/pod install` hits a warm cache. A private github.com
+        # repo authenticates automatically as graft's GitHub App (no deploy key); add an
+        # explicit `ssh-key:` to override. NOTE: don't pair with `cleanup: true` below —
+        # cleanup clears ~/Library/Caches, wiping Yarn/CocoaPods/SPM warmth.
+        # repos:
+        #   - url: https://github.com/me/app.git
+        #     ref: main
+        #     run: [yarn install --frozen-lockfile]
 
         # ── Verify + shrink ────────────────────────────────────────
         verify:
