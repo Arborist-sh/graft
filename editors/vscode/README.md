@@ -24,7 +24,7 @@ for macOS & Linux dev environments and ephemeral CI runners.
 From the Extensions view (`⇧⌘X`), search **Graft** and click Install — or:
 
 ```sh
-code --install-extension briancorbin.dotgraft
+code --install-extension arborist-sh.graftfile
 ```
 
 **Build from source:** open `editors/vscode` in VS Code and press **F5** for an Extension

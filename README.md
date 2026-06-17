@@ -252,7 +252,7 @@ Full guide — clone vs mount, `--code`, the picker, advanced flags — in
 
 It can **create a GitHub App for you** end-to-end (the manifest flow — no manual key
 download) or smart-import an existing key, and a **Standard ↔ Graft** vocabulary toggle
-lives in Settings. Install: `brew install --cask briancorbin/tap/graft-app`.
+lives in Settings. Install: `brew install --cask arborist-sh/tap/graft-app`.
 
 ## Architecture
 
@@ -298,13 +298,13 @@ Shipped: ✅ **full desktop app** (`Graft.app` — Dashboard, Canopy, Nests, Sap
 CLI + daemon:
 
 ```sh
-brew install briancorbin/tap/graft
+brew install arborist-sh/tap/graft
 ```
 
 Menu-bar app (installs the CLI too):
 
 ```sh
-brew install --cask briancorbin/tap/graft-app
+brew install --cask arborist-sh/tap/graft-app
 ```
 
 Apple Silicon only. [Tart](https://tart.run) is pulled in as a dependency.
