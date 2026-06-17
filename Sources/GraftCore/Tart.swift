@@ -38,7 +38,10 @@ public enum Tart {
         for mount in mounts {
             command += " --dir='\(mount.tartDirArg)'"
         }
-        try Shell.launchDetached(command)
+        // Capture the detached boot's output to a per-VM log so a fast failure (bad image,
+        // entitlement/session error, etc.) isn't swallowed — `acquire` reads it back if the
+        // VM never gets an IP.
+        try Shell.launchDetached(command, logURL: BootLog.url(for: name))
     }
 
     public static func stop(name: String) async throws {
