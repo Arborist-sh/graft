@@ -1,9 +1,9 @@
-![Graft](https://raw.githubusercontent.com/briancorbin/graft/main/Assets/header-dark.png)
+![Graft](https://raw.githubusercontent.com/arborist-sh/graft/main/Assets/header-dark.png)
 
 # Graft for VS Code
 
 Editor support for **`.graft`** image recipes (and `Graftfile`) — the declarative recipes
-behind [Graft](https://github.com/briancorbin/graft), which builds golden Tart VM images
+behind [Graft](https://github.com/arborist-sh/graft), which builds golden Tart VM images
 for macOS & Linux dev environments and ephemeral CI runners.
 
 - **Syntax highlighting** — graft keywords colored, and the bash inside `run: |` /
@@ -17,7 +17,7 @@ for macOS & Linux dev environments and ephemeral CI runners.
 - **File icon** — `.graft` files get the Graft mark in icon themes that support language
   icons (e.g. Seti, the default).
 - **JSON schema** — bundled at
-  [`schemas/graft.schema.json`](https://github.com/briancorbin/graft/blob/main/editors/vscode/schemas/graft.schema.json).
+  [`schemas/graft.schema.json`](https://github.com/arborist-sh/graft/blob/main/editors/vscode/schemas/graft.schema.json).
 
 ## Install
 

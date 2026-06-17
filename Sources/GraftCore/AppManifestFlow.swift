@@ -81,7 +81,7 @@ public enum AppManifestFlow {
     public static func run(
         account: Account,
         name: String?,
-        homepage: String = "https://github.com/briancorbin/graft",
+        homepage: String = "https://github.com/arborist-sh/graft",
         apiBase: URL = URL(string: "https://api.github.com")!,
         timeout: TimeInterval = 300,
         openBrowser: @escaping @Sendable (URL) -> Void
