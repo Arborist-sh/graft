@@ -1,6 +1,6 @@
 {
-  "name": "dotgraft",
-  "displayName": "Graft Recipes",
+  "name": "graftfile",
+  "displayName": "Graftfile",
   "description": "Syntax highlighting, snippets, schema, and helpers for .graft image recipes.",
   "version": "0.1.0",
   "publisher": "arborist-sh",
