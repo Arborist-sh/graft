@@ -234,14 +234,27 @@ public enum Shell {
         return process.terminationStatus
     }
 
-    /// Launch a command fully detached (`nohup … &`) so it survives this process
-    /// exiting. Used for `tart run`, where the VM stays alive only as long as the
-    /// run process does — and we want `graft leaf create` to return while it keeps
-    /// running. Returns as soon as the shell backgrounds the job.
-    public static func launchDetached(_ command: String) throws {
+    /// Launch a command fully detached so it survives this process exiting. Used for
+    /// `tart run`, where the VM stays alive only as long as the run process does — and
+    /// we want `graft leaf create` to return while it keeps running. Returns as soon as
+    /// the shell backgrounds the job.
+    ///
+    /// Deliberately does NOT use `nohup`: on some hosts (notably EC2 Mac dedicated hosts
+    /// over plain SSH) `nohup` aborts with "can't detach from console: Inappropriate
+    /// ioctl for device" (ENOTTY) before it ever exec's the command, so `tart run` never
+    /// fires and the clone is left sitting at `stopped`. We don't need nohup anyway: a
+    /// non-interactive `sh -c` doesn't send SIGHUP to its background jobs on exit.
+    /// Redirecting stdin from /dev/null is what actually detaches the child from the
+    /// controlling TTY; backgrounding it then reparents it to launchd so it outlives graft.
+    ///
+    /// Output goes to `logURL` when given, so a detached boot that fails fast leaves its
+    /// error on disk to read back (the process outlives us, so we can't return it). Without
+    /// a log URL it falls back to /dev/null.
+    public static func launchDetached(_ command: String, logURL: URL? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "nohup \(command) >/dev/null 2>&1 &"]
+        let sink = logURL.map { "'\($0.path)'" } ?? "/dev/null"
+        process.arguments = ["-c", "\(command) </dev/null >\(sink) 2>&1 &"]
         process.environment = ProcessInfo.processInfo.environment
         try process.run()
         process.waitUntilExit()

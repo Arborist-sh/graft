@@ -47,7 +47,19 @@ public struct LocalTartProvider: VMProvider {
             }
             onProgress?(.booting)   // local Tart: clone done, the guest is now coming up
             try Tart.run(name: name, mounts: mounts, network: network)
-            let ip = try await Tart.waitForIP(name: name)
+            let ip: String
+            do {
+                ip = try await Tart.waitForIP(name: name)
+            } catch {
+                // The detached `tart run` never brought the VM up. Its output went to the
+                // boot log, not our stderr — read it back so the real cause (not just an IP
+                // timeout) reaches the supervisor instead of being swallowed.
+                let log = BootLog.tail(for: name)
+                guard !log.isEmpty else { throw error }
+                let indented = log.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { "    \($0)" }.joined(separator: "\n")
+                throw GraftError("\(error)\n  `tart run \(name)` output:\n\(indented)")
+            }
             let vm = RunningVM(name: name, ip: ip, os: os)
             // Same host as the guest, so we launch the runner ourselves — detached, so it
             // survives this exec closing — then monitor via GitHub like the fleet path.
@@ -69,6 +81,8 @@ public struct LocalTartProvider: VMProvider {
     }
 
     public func release(_ vm: RunningVM) async throws {
+        // Drop the boot log once the leaf is gone, so they don't pile up one-per-runner.
+        defer { BootLog.remove(for: vm.name) }
         // Best-effort stop (a crashed VM may already be down), then delete.
         try? await Tart.stop(name: vm.name)
         guard try await Tart.exists(name: vm.name) else { return }
