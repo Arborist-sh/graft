@@ -62,14 +62,17 @@ final class GraftController: ObservableObject {
 
     // MARK: Actions
 
-    func start() {
+    /// Start the daemon. Pass `monitor: true` to also run the health monitor
+    /// (`--monitor`), which populates the snapshot + event log Sapflow reads.
+    func start(monitor: Bool = false) {
         guard let graft = Self.graftPath else { return }
         actionToken += 1
         let token = actionToken
         let target = currentTarget()
         actionNote = target > 0 ? "Booting runners… 0/\(target)" : "Starting…"
         let log = NSHomeDirectory() + "/.graft/graft.log"
-        runShell("nohup '\(graft)' arborist tend --daemon >> '\(log)' 2>&1 &")
+        let monitorFlag = monitor ? " --monitor" : ""
+        runShell("nohup '\(graft)' arborist tend --daemon\(monitorFlag) >> '\(log)' 2>&1 &")
         pollFill(token: token, target: target, attemptsRemaining: 360)
     }
 
