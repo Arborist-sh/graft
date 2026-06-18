@@ -53,9 +53,11 @@ struct SeedsView: View {
                 Image(systemName: "network").foregroundStyle(.secondary)
                 TextField("nat | bridged:en0", text: $buildNetwork)
                     .textFieldStyle(.roundedBorder).frame(width: 130)
-                Image(systemName: "questionmark.circle")
-                    .foregroundStyle(.secondary)
-                    .help("Build network for grows on THIS machine — passed as `--network`.\n\n• Leave empty for the default (NAT).\n• Use bridged:<iface> (e.g. bridged:en8) when NAT is blocked, e.g. behind a corporate VPN / IP allow list, so the build VM rides your network.\n\nHost-specific: it's saved in app prefs, never baked into the shareable seed.")
+                Button(action: {}) {
+                    Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Build network for grows on THIS machine — passed as `--network`.\n\n• Leave empty for the default (NAT).\n• Use bridged:<iface> (e.g. bridged:en8) when NAT is blocked, e.g. behind a corporate VPN / IP allow list, so the build VM rides your network.\n\nHost-specific: it's saved in app prefs, never baked into the shareable seed.")
             }
             Button { importSeed() } label: { Label("Import…", systemImage: "square.and.arrow.down") }
             Button { editing = EditingSeed(name: nil) } label: { Label("New seed", systemImage: "plus") }
