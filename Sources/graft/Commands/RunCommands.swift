@@ -36,7 +36,11 @@ struct Run: AsyncParsableCommand {
         }
 
         let provider = try Self.makeProvider(cfg)
-        let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
+        // Each pool's App key may live in a different keychain (login vs system), so the
+        // scope is resolved per App ID — not assumed to be one keychain for the whole run.
+        let scopes = Set(cfg.distinctGitHubConfigs().map(\.scope.rawValue)).sorted().joined(separator: "+")
+        // A representative store for the (detection-only) health monitor's GitHub clients.
+        let monitorScope = cfg.github?.scope ?? cfg.pools.compactMap { $0.github?.scope }.first ?? .login
 
         // Local Tart: pull any pool images that aren't cached yet (with progress) before
         // the live UI starts, so the first runner doesn't silently hang on a big download.
@@ -69,11 +73,13 @@ struct Run: AsyncParsableCommand {
         let reporter: RunnerStatusReporter? = dashboard.map { (d: LiveDashboard) -> RunnerStatusReporter in
             { tag, vm, phase in d.update(slot: tag, vm: vm, phase: phase) }
         }
-        let secrets = KeychainSecretStore(scope: scope)
+        let secrets = KeychainSecretStore(scope: monitorScope)
         let supervisor = PoolSupervisor(
             config: cfg,
             provider: provider,
-            secrets: secrets,
+            github: { appID in
+                GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: cfg.scope(forAppID: appID)))
+            },
             status: reporter
         )
 
@@ -97,7 +103,7 @@ struct Run: AsyncParsableCommand {
             return Task { await monitor.run() }
         }
 
-        Log.info("graft starting — \(cfg.pools.count) pool(s), \(scope.rawValue) keychain\(daemon ? ", daemon" : "")")
+        Log.info("graft starting — \(cfg.pools.count) pool(s), \(scopes.isEmpty ? "login" : scopes) keychain\(daemon ? ", daemon" : "")")
         let task = Task { await supervisor.run() }
         let monitorTask = startMonitorIfRequested()
         let sources = SignalTrap.install {
@@ -123,8 +129,7 @@ struct Run: AsyncParsableCommand {
             // Keychain (where `graft init` stashes it) so it's not in plaintext.
             // Left empty for an unsecured local trunk, which ignores auth.
             if (orchard.token ?? "").isEmpty {
-                let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
-                orchard.token = KeychainSecretStore(scope: scope).orchardToken(account: orchard.serviceAccount)
+                orchard.token = KeychainSecretStore(scope: orchard.scope).orchardToken(account: orchard.serviceAccount)
             }
             return OrchardProvider(config: orchard)
         }

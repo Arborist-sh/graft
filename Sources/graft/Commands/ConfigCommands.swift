@@ -39,14 +39,14 @@ extension ConfigCommand {
             // Key resolvability is a warning, not a failure — keys may live in the
             // system keychain (sudo) or be imported later on a control host.
             guard !skipKeys else { return }
-            let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
-            let store = KeychainSecretStore(scope: scope)
-            for appID in Set(cfg.pools.compactMap { cfg.gitHub(for: $0)?.appId }).sorted() {
+            // Each App's key is looked up in its own recorded keychain scope.
+            for gh in cfg.distinctGitHubConfigs().sorted(by: { $0.appId < $1.appId }) {
+                let store = KeychainSecretStore(scope: gh.scope)
                 do {
-                    _ = try await store.privateKeyPEM(forAppID: appID)
-                    print("  ✓ app \(appID): key present in \(scope.rawValue) keychain")
+                    _ = try await store.privateKeyPEM(forAppID: gh.appId)
+                    print("  ✓ app \(gh.appId): key present in \(gh.scope.rawValue) keychain")
                 } catch {
-                    printErr("  ⚠ app \(appID): \(error)")
+                    printErr("  ⚠ app \(gh.appId): \(error)")
                 }
             }
         }

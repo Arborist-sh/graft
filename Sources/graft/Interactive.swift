@@ -51,57 +51,87 @@ enum Prompt {
     }
 }
 
-/// Resolve a GitHub App ID interactively (pick from keys already in the keychain or
-/// enter a new one), then run the secrets step: ensure that App has a private key —
-/// importing one if it's missing, or offering to rotate it if it's already there.
+/// The wizard's GitHub App step — App ID and its private key, bundled. Pick an App that
+/// already has a key (scanning *both* keychains), create a brand-new App via GitHub's
+/// manifest flow, or import a `.pem` you already have. Returns the App ID together with
+/// the keychain scope its key lives in — the two always travel together, so there's no
+/// separate scope toggle to drift out of sync.
 enum AppPicker {
-    static func resolve(scope: KeychainScope) throws -> Int {
-        let store = KeychainSecretStore(scope: scope)
-        let existing = (try? store.storedAppIDs()) ?? []   // attribute read — no Keychain prompt
+    static func resolve() async throws -> (appID: Int, scope: KeychainScope) {
+        // Attribute-only reads (no Keychain unlock prompt), so scanning both is free.
+        let entries: [(app: KeychainSecretStore.StoredApp, scope: KeychainScope)] =
+            (((try? KeychainSecretStore(scope: .login).storedApps()) ?? []).map { ($0, KeychainScope.login) })
+            + (((try? KeychainSecretStore(scope: .system).storedApps()) ?? []).map { ($0, KeychainScope.system) })
 
-        let appID: Int
-        if existing.isEmpty {
-            printErr("(no GitHub App keys in the \(scope.rawValue) keychain yet)")
-            appID = Prompt.positiveInt("GitHub App ID")
-        } else {
-            var options = existing.map { "app \($0)" }
-            options.append("enter a different App ID…")
-            let choice = Prompt.choose("Which GitHub App?", options)
-            appID = choice < existing.count ? existing[choice] : Prompt.positiveInt("GitHub App ID")
+        var options = entries.map { e -> String in
+            let label = e.app.name.map { "\($0) (\(e.app.id))" } ?? "app \(e.app.id)"
+            return "\(label) — \(e.scope.rawValue) keychain"
+        }
+        let createIdx = options.count; options.append("create a new GitHub App…")
+        options.append("import a .pem I already have…")
+
+        let choice = Prompt.choose("Which GitHub App?", options)
+        if choice < entries.count {
+            let e = entries[choice]
+            printErr("✓ using app \(e.app.id) (key in the \(e.scope.rawValue) keychain)")
+            return (e.app.id, e.scope)
         }
 
-        try ensureKey(appID: appID, store: store, scope: scope)
-        return appID
+        // Create and import both write a key — so this is where we choose where it lives.
+        let scope = chooseStorageScope()
+        let appID = choice == createIdx
+            ? try await createApp(scope: scope)
+            : try importPEM(scope: scope)
+        return (appID, scope)
     }
 
-    /// The wizard's secrets step. Always runs, so key import is a visible part of
-    /// setup rather than a hidden branch: import if missing, offer rotate if present.
-    private static func ensureKey(appID: Int, store: KeychainSecretStore, scope: KeychainScope) throws {
-        let hasKey = ((try? store.storedAppIDs()) ?? []).contains(appID)
-        if hasKey {
-            printErr("✓ private key already stored for app \(appID) (\(scope.rawValue) keychain)")
-            guard Prompt.confirm("Import a new .pem for app \(appID) (rotate the key)?", default: false) else { return }
-        } else {
-            printErr("No private key stored for app \(appID) yet.")
-            guard Prompt.confirm("Import its .pem now?", default: true) else {
-                printErr("  ⚠ skipped — `graft run` will fail until you import it:")
-                let flag = scope == .system ? " --system" : ""
-                printErr("    graft secrets import --app-id \(appID) --pem <path>\(flag)")
-                return
-            }
+    /// Where a newly written key should live: the login keychain, the system keychain, or
+    /// another keychain by path. An SSH session defaults to system (a headless daemon can't
+    /// reach the login keychain at boot).
+    private static func chooseStorageScope() -> KeychainScope {
+        let env = ProcessInfo.processInfo.environment
+        let headless = env["SSH_CONNECTION"] != nil || env["SSH_TTY"] != nil
+        let login = "login keychain (interactive Mac)"
+        let system = "system keychain (headless / daemon)"
+        let other = "other keychain (path)…"
+        // Put the likely answer first so the arrow-select highlights it by default.
+        let options = (headless ? [system, login] : [login, system]) + [other]
+        let pick = options[Prompt.choose("Store the key in which keychain?", options)]
+        if pick == other { return .file((Prompt.required("Keychain path") as NSString).expandingTildeInPath) }
+        return pick.hasPrefix("system") ? .system : .login
+    }
+
+    /// Create a brand-new GitHub App via the manifest flow (browser), store its key, and
+    /// open the install page. Returns the new App ID.
+    private static func createApp(scope: KeychainScope) async throws -> Int {
+        let account: AppManifestFlow.Account = Prompt.confirm("Create it under an organization (you must be an org owner)?", default: false)
+            ? .org(Prompt.required("Organization login"))
+            : .user
+        let name = Prompt.line("Desired App name (blank → name it on GitHub)")
+        printErr("Opening your browser — click “Create GitHub App” on GitHub, then come back here…")
+        let created = try await AppManifestFlow.run(account: account, name: name.isEmpty ? nil : name) { url in
+            Secrets.CreateApp.open(url)
         }
-        try importPEM(appID: appID, store: store, scope: scope)
+        try KeychainSecretStore(scope: scope).store(pem: created.pem, forAppID: created.appID, name: created.name)
+        printErr("✓ created “\(created.name)” (id \(created.appID)); key stored in the \(scope.rawValue) keychain")
+        printErr("→ last step — install the App on your org/repo:")
+        printErr("  \(created.installURL)")
+        Secrets.CreateApp.open(URL(string: created.installURL)!)
+        return created.appID
     }
 
-    private static func importPEM(appID: Int, store: KeychainSecretStore, scope: KeychainScope) throws {
+    /// Import a `.pem` the user already downloaded from GitHub, into the chosen keychain.
+    private static func importPEM(scope: KeychainScope) throws -> Int {
+        let appID = Prompt.positiveInt("GitHub App ID")
         let path = (Prompt.required("Path to the App private-key .pem") as NSString).expandingTildeInPath
         guard let pem = try? String(contentsOfFile: path, encoding: .utf8) else {
             throw GraftError("can't read PEM at \(path)")
         }
         try PrivateKeyValidator.validate(pem: pem)
-        try store.store(pem: pem, forAppID: appID)
+        try KeychainSecretStore(scope: scope).store(pem: pem, forAppID: appID)
         printErr("✓ stored key for app \(appID) in the \(scope.rawValue) keychain")
         printErr("  shred the file:  rm -P \(path)")
+        return appID
     }
 }
 
@@ -211,8 +241,7 @@ enum DevBoxPicker {
         guard let name = try? resolveProfileName(profile),
               let cfg = try? Profiles.load(name),
               let appID = cfg.github?.appId ?? cfg.pools.first?.github?.appId else { return nil }
-        let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
-        return (appID, scope)
+        return (appID, cfg.scope(forAppID: appID))
     }
 }
 
@@ -283,10 +312,11 @@ enum Wizard {
         return PoolConfig(name: name, image: image, os: os, count: count, labels: labels)
     }
 
-    /// Full profile wizard: name → one-or-more pools → keychain secrets → save →
-    /// optionally set active → validate. Returns the profile name.
+    /// Full profile wizard: name → GitHub App (sets the keychain scope) → target → backend
+    /// → one-or-more pools → save → optionally set active → validate → verify. Returns the
+    /// profile name.
     @discardableResult
-    static func createProfile(scope: KeychainScope, makeActiveDefault: Bool = true) async throws -> String {
+    static func createProfile(makeActiveDefault: Bool = true) async throws -> String {
         printErr("Graft setup — let's build a profile.\n")
 
         let profileName = Prompt.line("Profile name", default: "default")
@@ -297,13 +327,15 @@ enum Wizard {
             printErr("(extending existing profile '\(profileName)')")
         }
 
-        try await chooseBackend(into: &config, scope: scope)
-
-        // GitHub App + target are profile-level — every pool registers here (a pool can
-        // override later, but that's rare). Collect once.
-        let appID = try AppPicker.resolve(scope: scope)
+        // GitHub App comes first: it's needed by both backends, and choosing it establishes
+        // which keychain this profile's secrets live in (reused by the Orchard token below).
+        let (appID, scope) = try await AppPicker.resolve()
         let target = await TargetPicker.resolve(appID: appID, scope: scope)
-        config.github = GitHubConfig(appId: appID, target: target)
+        // Runner groups only exist for orgs; repos always use the default group (1).
+        let runnerGroupId = target.hasPrefix("org:") ? Prompt.int("Runner group id", default: 1) : 1
+        config.github = GitHubConfig(appId: appID, target: target, runnerGroupId: runnerGroupId, scope: scope)
+
+        try await chooseBackend(into: &config, scope: scope)
 
         repeat {
             let pool = await buildPool()
@@ -311,7 +343,7 @@ enum Wizard {
             config.pools.append(pool)
         } while Prompt.confirm("Add another pool?", default: false)
 
-        config.secrets = SecretsConfig(store: "keychain", scope: scope.rawValue)
+        config.secrets = SecretsConfig(store: "keychain")
         try Profiles.save(config, as: profileName)
         printErr("\n✓ wrote profile '\(profileName)'  →  \(Profiles.path(for: profileName))")
 
@@ -326,18 +358,34 @@ enum Wizard {
         } else {
             for problem in problems { printErr("  ⚠ \(problem)") }
         }
-        printErr("\nNext:  graft arborist   (verify GitHub auth)   then   graft run")
+
+        // Verify the App→installation→token chain now, while it's fresh — so a wrong App ID,
+        // a missing installation, or a key in the wrong keychain surfaces here, not at run.
+        if let gh = config.github, Prompt.confirm("Verify GitHub auth now?", default: true) {
+            if await Check.verify(targets: [gh]) {
+                printErr("✓ GitHub auth verified")
+            } else {
+                printErr("  ⚠ auth check failed — fix the above, then re-run `graft arborist check`")
+            }
+        }
+
+        printErr("\nNext:  graft run")
         return profileName
     }
 
     /// Ask whether this profile runs on local Tart or an Orchard **tree** (multi-host).
     /// For a tree, collect the trunk (controller) URL + service account, stash the token
-    /// in the Keychain, and set `provider`/`orchard` on the config. (Folds in what used to
-    /// be `graft orchard init`.)
+    /// in the Keychain (at `scope`), and set `provider`/`orchard` on the config. (Folds in
+    /// what used to be `graft orchard init`.)
     static func chooseBackend(into config: inout GraftConfig, scope: KeychainScope) async throws {
         let isOrchard = Prompt.choose("Backend?", ["Local Tart (single host)", "Orchard tree (multi-host)"]) == 1
         guard isOrchard else {
             config.provider = .tart
+            // Tart is the runtime for this backend but isn't invoked during init itself —
+            // warn (don't block) so a profile can still be scaffolded for another host.
+            if (try? await Shell.run("tart", ["--version"]))?.succeeded != true {
+                printErr(ANSI.yellow("  ⚠ `tart` not found on PATH — `graft run` needs it: brew install cirruslabs/cli/tart"))
+            }
             return
         }
         guard let v = try? await Shell.run("orchard", ["--version"]), v.succeeded else {
@@ -357,7 +405,7 @@ enum Wizard {
         let account = Prompt.line("Service account name", default: config.orchard?.serviceAccount ?? "graft")
         try await ensureOrchardToken(account: account, url: url, scope: scope)
         let maxVMs = Prompt.int("Max leaves graft should ask for (ceiling)", default: config.orchard?.maxVMs ?? 8)
-        config.provider = .orchard(OrchardConfig(controllerURL: url, serviceAccount: account, token: nil, maxVMs: maxVMs))
+        config.provider = .orchard(OrchardConfig(controllerURL: url, serviceAccount: account, token: nil, maxVMs: maxVMs, scope: scope))
         printErr("✓ tree backend wired → \(url.absoluteString)")
     }
 
