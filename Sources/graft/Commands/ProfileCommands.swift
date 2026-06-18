@@ -18,12 +18,8 @@ extension Profile {
             aliases: ["new"]
         )
 
-        @Flag(help: "Store/read keys in the system keychain (headless hosts).")
-        var system = false
-
         func run() async throws {
-            let scope: KeychainScope = system ? .system : .login
-            try await Wizard.createProfile(scope: scope)
+            try await Wizard.createProfile()
         }
     }
 

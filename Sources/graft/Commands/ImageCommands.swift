@@ -43,9 +43,6 @@ extension Image {
         @Option(name: .long, help: "Profile to read GitHub App creds from for private `repos:` (default: active profile).")
         var profile: String?
 
-        @Flag(help: "Use the system keychain for the App key (headless hosts).")
-        var system = false
-
         func run() async throws {
             var recipe = try ImageRecipe.load(from: seed)
             if let name { recipe.name = name }
@@ -54,7 +51,7 @@ extension Image {
             // Only resolve GitHub App creds when there's a private repo to authenticate — keeps
             // image builds that don't use `repos:` fully decoupled from any profile/keychain.
             let repoToken = (recipe.repos?.isEmpty == false)
-                ? Self.makeRepoTokenMinter(config: config, profile: profile, system: system)
+                ? Self.makeRepoTokenMinter(config: config, profile: profile)
                 : nil
             printErr("growing sapling '\(recipe.name)' from \(recipe.from)…\n")
             try await ImageBuilder().build(recipe, scriptBody: scriptBody, repoToken: repoToken) { line in
@@ -67,21 +64,19 @@ extension Image {
         /// so private `repos:` precache clones authenticate as graft's App — no deploy key. Resolves
         /// the App(s) from the active profile (or --config/--profile). Returns nil (→ anonymous
         /// clones) if no GitHub App is configured; mints nil per-repo if no App can mint for it.
-        static func makeRepoTokenMinter(config: String?, profile: String?, system: Bool)
+        static func makeRepoTokenMinter(config: String?, profile: String?)
             -> (@Sendable (String) async -> String?)?
         {
             let path = GraftConfig.resolvePath(explicit: config, profile: profile)
             guard let cfg = try? GraftConfig.load(from: path) else { return nil }
             // Candidate Apps: the profile default plus any per-pool overrides, unique by id.
+            // Each App's key lives in its own recorded keychain scope.
             var seen = Set<Int>()
-            var appIDs: [Int] = []
-            for gh in ([cfg.github] + cfg.pools.map { cfg.gitHub(for: $0) }).compactMap({ $0 }) {
-                if seen.insert(gh.appId).inserted { appIDs.append(gh.appId) }
-            }
-            guard !appIDs.isEmpty else { return nil }
-            let scope = system ? .system : (KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login)
-            let secrets = KeychainSecretStore(scope: scope)
-            let clients = appIDs.map { GitHubAppClient(appID: $0, secrets: secrets) }
+            let clients = ([cfg.github] + cfg.pools.map { cfg.gitHub(for: $0) })
+                .compactMap { $0 }
+                .filter { seen.insert($0.appId).inserted }
+                .map { gh in GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope)) }
+            guard !clients.isEmpty else { return nil }
             return { url in
                 guard let slug = ImageRecipe.githubSlug(from: url) else { return nil }
                 let target = GitHubTarget.repo(owner: slug.owner, name: slug.name)

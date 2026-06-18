@@ -7,14 +7,17 @@ import GraftCore
 /// both reflect the same daemon state (refreshed every 3s from the state file).
 struct DashboardView: View {
     @ObservedObject var controller: GraftController
+    @ObservedObject var config: ConfigStore
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     /// Ticks once a second so the Age column counts up live between the controller's
     /// 3s state refreshes.
     @State private var now = Date()
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @State private var creatingProfile = false
 
     private var busy: Bool { controller.actionNote != nil }
+    private var hasProfiles: Bool { !controller.profiles.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +29,9 @@ struct DashboardView: View {
             footer
         }
         .onReceive(ticker) { now = $0 }
+        .sheet(isPresented: $creatingProfile, onDismiss: { controller.refresh() }) {
+            ProfileSettingsSheet(name: "", isNew: true, config: config)
+        }
     }
 
     // MARK: Header
@@ -102,7 +108,8 @@ struct DashboardView: View {
                 Label("Start", systemImage: "play.fill")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(busy || !controller.graftInstalled)
+            .disabled(busy || !controller.graftInstalled || !hasProfiles)
+            .help(hasProfiles ? "Boot this profile's runners" : "Create a profile first")
         }
     }
 
@@ -115,6 +122,21 @@ struct DashboardView: View {
                        "Install the graft CLI (brew install arborist-sh/tap/graft) to get going.") {
                 symbolIcon("exclamationmark.triangle")
             }
+        } else if !hasProfiles {
+            VStack(spacing: 14) {
+                GraftMark(size: 46, color: .secondary)
+                Text("No profiles yet").font(.headline)
+                Text("A profile sets the backend, GitHub App, and runner pools.\nCreate one to get started.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button { creatingProfile = true } label: {
+                    Label("Create your first profile", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
         } else if !controller.isRunning {
             VStack(spacing: 16) {
                 emptyState("Not running",

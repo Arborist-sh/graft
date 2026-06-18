@@ -89,10 +89,12 @@ graft secrets import --app-id <APP_ID> --pem ./app.pem
 rm -P ./app.pem          # then shred the file
 
 # Headless daemon hosts (system keychain, no login session at boot):
-sudo graft secrets import --app-id <APP_ID> --pem ./app.pem --system
+sudo graft secrets import --app-id <APP_ID> --pem ./app.pem --keychain /Library/Keychains/System.keychain
 ```
 
-Graft resolves the key from the Keychain by App ID — there is no key path in config.
+Graft resolves the key from the Keychain by App ID — there is no key path in config. The
+profile records *which* keychain each App's key lives in (`github.scope`: `login`, `system`,
+or a path), so there's no global flag to remember at run time — `graft init` sets it for you.
 
 ### 3. Configure
 
@@ -104,7 +106,7 @@ graft config validate
 ```json
 {
   "provider": { "type": "tart" },
-  "github": { "appId": 12345, "target": "org:my-org" },
+  "github": { "appId": 12345, "target": "org:my-org", "scope": "login" },
   "pools": [
     {
       "name": "macos-release",
@@ -116,7 +118,7 @@ graft config validate
       "memory": 8192
     }
   ],
-  "secrets": { "store": "keychain", "scope": "login" }
+  "secrets": { "store": "keychain" }
 }
 ```
 
@@ -124,9 +126,11 @@ The `provider` object owns the backend (`{ "type": "tart" }`, or
 `{ "type": "orchard", "controllerURL": …, "serviceAccount": …, "maxVMs": … }`).
 **`github`** (the App + where runners register) is declared once at the profile level
 and inherited by every pool — a pool may override it with its own `github` for a
-multi-repo profile. A **pool** is just its workload: `image`, `count`, `os`, `labels`
-(its tags — `runs-on:` targets these; default `["self-hosted", <os>, <name>]`), and
-optional `cpu`/`memory` per leaf. `runnerGroupId` defaults to `1`.
+multi-repo profile. Its **`scope`** records which keychain that App's key lives in
+(`login` for an interactive Mac, `system` for a headless/daemon host) — so the App ID
+and its key always travel together. A **pool** is just its workload: `image`, `count`,
+`os`, `labels` (its tags — `runs-on:` targets these; default `["self-hosted", <os>, <name>]`),
+and optional `cpu`/`memory` per leaf. `runnerGroupId` defaults to `1`.
 
 ### 4. Tend
 
@@ -179,9 +183,9 @@ graft leaf list [--all]                 List graft-managed (or all) leaves
 graft leaf ip <name> [--wait]           Print a leaf's IP
 graft runners list [--profile NAME]     List graft's runner registrations on GitHub
 graft runners prune [--profile NAME]    Delete offline graft runner husks on GitHub
-graft secrets import --app-id N --pem P [--system]
-graft secrets list [--system]
-graft secrets rm --app-id N [--system]
+graft secrets import --app-id N --pem P [--keychain PATH]   (default: login keychain)
+graft secrets list [--keychain PATH]
+graft secrets rm --app-id N [--keychain PATH]
 graft config validate [--profile NAME] [--skip-keys]
 graft config template
 ```

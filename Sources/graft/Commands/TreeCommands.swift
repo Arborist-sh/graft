@@ -70,8 +70,7 @@ extension Tree {
             throw GraftError("profile '\(name)' has no tree configured — run `graft init` and choose the Orchard backend")
         }
         if (orchard.token ?? "").isEmpty {
-            let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
-            orchard.token = KeychainSecretStore(scope: scope).orchardToken(account: orchard.serviceAccount)
+            orchard.token = KeychainSecretStore(scope: orchard.scope).orchardToken(account: orchard.serviceAccount)
         }
         return OrchardProvider(config: orchard)
     }

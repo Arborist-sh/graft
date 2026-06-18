@@ -12,12 +12,14 @@ struct Secrets: AsyncParsableCommand {
     )
 }
 
-/// Login (default) vs. system keychain, shared by all `secrets` subcommands.
+/// Which keychain a `secrets` subcommand operates on. Default: your login keychain.
+/// Pass `--keychain <path>` to target another — e.g. the system keychain at
+/// `/Library/Keychains/System.keychain` for a headless `--daemon` host (writing it needs sudo).
 struct KeychainScopeOptions: ParsableArguments {
-    @Flag(help: "Use the system keychain — for headless `--daemon` hosts. Writing needs sudo.")
-    var system = false
+    @Option(name: .long, help: "Keychain file to use (default: your login keychain). e.g. /Library/Keychains/System.keychain")
+    var keychain: String?
 
-    var scope: KeychainScope { system ? .system : .login }
+    var scope: KeychainScope { keychain.map { KeychainScope(parsing: $0) } ?? .login }
     var store: KeychainSecretStore { KeychainSecretStore(scope: scope) }
 }
 
@@ -58,7 +60,8 @@ extension Secrets {
                 cfg.github = GitHubConfig(
                     appId: created.appID,
                     target: cfg.github?.target ?? "",
-                    runnerGroupId: cfg.github?.runnerGroupId ?? 1
+                    runnerGroupId: cfg.github?.runnerGroupId ?? 1,
+                    scope: keychain.scope
                 )
                 try Profiles.save(cfg, as: profile)
                 printErr("✓ set profile “\(profile)” App ID to \(created.appID)")

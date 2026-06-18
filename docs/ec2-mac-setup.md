@@ -150,7 +150,7 @@ rolling it out — CI Macs are usually a known exception, but get sign-off.
 
 - **Auto-login persists across reboots** — this is a one-time setup.
 - With the login session unlocked at boot, the **login keychain is reachable**, so
-  graft's GitHub App key can live there — no `--system` keychain needed. Import with:
+  graft's GitHub App key can live there — no system keychain needed. Import with:
   ```sh
   graft secrets import --app-id <APP_ID> --pem ./app.pem
   ```

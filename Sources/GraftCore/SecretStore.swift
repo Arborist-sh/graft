@@ -9,14 +9,55 @@ public protocol SecretStore: Sendable {
 }
 
 /// Which macOS keychain backs the store.
-public enum KeychainScope: String, Sendable, CaseIterable {
-    /// The user's login keychain — unlocked by the GUI session. For interactive
-    /// `graft run`.
+/// Which keychain a secret lives in. `login` is the user's default keychain (unlocked by
+/// the GUI session); `system` is the well-known `/Library/Keychains/System.keychain`
+/// (root-accessible, unlocked at boot — reachable by a headless `--daemon` with no login
+/// session; writing needs sudo); `file` is any other keychain by absolute path. Encodes as
+/// a plain string in config: `"login"`, `"system"`, or the path.
+public enum KeychainScope: Codable, Sendable, Equatable, CustomStringConvertible {
     case login
-    /// The system keychain (`/Library/Keychains/System.keychain`) — root-accessible
-    /// and unlocked at boot, so a headless `graft run --daemon` can reach it with no
-    /// login session. Writing requires sudo.
     case system
+    case file(String)
+
+    /// The well-known macOS system keychain path.
+    public static let systemPath = "/Library/Keychains/System.keychain"
+
+    /// The keychain file to open, or nil for the default (login) search list.
+    public var keychainFilePath: String? {
+        switch self {
+        case .login: return nil
+        case .system: return Self.systemPath
+        case .file(let path): return path
+        }
+    }
+
+    /// Short string form for config + messages: "login", "system", or the path.
+    public var rawValue: String {
+        switch self {
+        case .login: return "login"
+        case .system: return "system"
+        case .file(let path): return path
+        }
+    }
+    public var description: String { rawValue }
+
+    /// Parse the config/CLI string form. The system keychain path normalizes to `.system`
+    /// so it has one canonical representation however it was spelled.
+    public init(parsing string: String) {
+        switch string {
+        case "login": self = .login
+        case "system", Self.systemPath: self = .system
+        default: self = .file(string)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(parsing: try decoder.singleValueContainer().decode(String.self))
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// `SecretStore` backed by the macOS Keychain. The PEM is stored as a generic-
@@ -237,30 +278,32 @@ public struct KeychainSecretStore: SecretStore {
     // to address a specific keychain file on macOS). Login uses the default list.
 
     private func applySearchScope(to query: inout [String: Any]) {
-        if let keychain = systemKeychainIfNeeded() {
+        if let keychain = openKeychainIfNeeded() {
             query[kSecMatchSearchList as String] = [keychain]
         }
     }
 
     private func applyWriteScope(to attributes: inout [String: Any]) {
-        if let keychain = systemKeychainIfNeeded() {
+        if let keychain = openKeychainIfNeeded() {
             attributes[kSecUseKeychain as String] = keychain
         }
     }
 
-    private func systemKeychainIfNeeded() -> SecKeychain? {
-        guard scope == .system else { return nil }
+    /// Open the keychain file this scope targets (system or an explicit path), or nil for
+    /// login (which uses the default search list).
+    private func openKeychainIfNeeded() -> SecKeychain? {
+        guard let path = scope.keychainFilePath else { return nil }
         var keychain: SecKeychain?
-        // Deprecated API, intentional: the only way to address the system keychain file.
-        let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
+        // Deprecated API, intentional: the only way to address a specific keychain file.
+        let status = SecKeychainOpen(path, &keychain)
         return status == errSecSuccess ? keychain : nil
     }
 
     private func keychainError(_ action: String, _ status: OSStatus) -> GraftError {
         let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
         var message = "keychain \(action) failed: \(detail)"
-        if status == errSecAuthFailed && scope == .system {
-            message += " (writing the system keychain needs sudo)"
+        if status == errSecAuthFailed && scope != .login {
+            message += " (writing the \(scope.rawValue) keychain needs sudo)"
         }
         return GraftError(message)
     }

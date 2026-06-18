@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The app's sections — the sidebar items. Dashboard · Canopy · Nests · Saplings · Seeds
-/// + config. Sapflow (health) slots in here next.
+/// The app's sections — the sidebar items, grouped (see `SidebarGroup`) as Operate /
+/// Configure / Images & Dev. Sapflow (health) slots into Operate next.
 enum AppSection: String, CaseIterable, Identifiable {
-    case dashboard, canopy, nests, saplings, seeds, profiles, pools, secrets
+    case dashboard, canopy, profiles, pools, secrets, saplings, seeds, nests
     var id: String { rawValue }
 
     func title(_ vocab: Vocabulary) -> String {
@@ -33,6 +33,22 @@ enum AppSection: String, CaseIterable, Identifiable {
     }
 }
 
+/// Sidebar grouping — the headers the sections sit under. Order here is display order.
+enum SidebarGroup: String, CaseIterable, Identifiable {
+    case operate = "Operate"
+    case configure = "Configure"
+    case images = "Images & Dev"
+    var id: String { rawValue }
+
+    var sections: [AppSection] {
+        switch self {
+        case .operate:   return [.dashboard, .canopy]
+        case .configure: return [.profiles, .pools, .secrets]
+        case .images:    return [.saplings, .seeds, .nests]
+        }
+    }
+}
+
 /// The window root — a sidebar (NavigationSplitView) over the sections. The Dashboard reuses
 /// the runtime `GraftController`; the config sections share one `ConfigStore`.
 struct RootView: View {
@@ -45,15 +61,19 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
-                ForEach(AppSection.allCases) { item in
-                    Label(item.title(vocab), systemImage: item.symbol).tag(item)
+                ForEach(SidebarGroup.allCases) { group in
+                    Section(group.rawValue) {
+                        ForEach(group.sections) { item in
+                            Label(item.title(vocab), systemImage: item.symbol).tag(item)
+                        }
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 168, ideal: 188, max: 240)
             .navigationTitle("Graft")
         } detail: {
             switch section ?? .dashboard {
-            case .dashboard: DashboardView(controller: controller)
+            case .dashboard: DashboardView(controller: controller, config: config)
             case .canopy:    CanopyView(config: config)
             case .nests:     NestsView(config: config)
             case .saplings:  SaplingsView(config: config)
