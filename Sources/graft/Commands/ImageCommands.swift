@@ -43,9 +43,15 @@ extension Image {
         @Option(name: .long, help: "Profile to read GitHub App creds from for private `repos:` (default: active profile).")
         var profile: String?
 
+        @Option(name: .long, help: "Build-VM network, host-specific: nat | bridged:<iface> | softnet. Overrides the seed's `network:`. See `tart run --net-bridged=list`.")
+        var network: String?
+
         func run() async throws {
             var recipe = try ImageRecipe.load(from: seed)
             if let name { recipe.name = name }
+            // Network is a property of the build *host* (the interface name is machine-specific),
+            // not of the portable seed — so a CLI override wins over any `network:` in the file.
+            if let network { recipe.network = try VMNetwork(spec: network) }
 
             let scriptBody = try recipeScriptBody(recipe, recipeFile: seed)
             // Only resolve GitHub App creds when there's a private repo to authenticate — keeps

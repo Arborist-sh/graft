@@ -101,8 +101,11 @@ public struct ImageRecipe: Codable, Sendable {
     public let mounts: [Mount]?
     public let os: GuestOS?
     /// VM networking during the build (default shared NAT). Set `bridged:<iface>` when
-    /// building on a host where NAT is blocked (e.g. behind Zscaler).
-    public let network: VMNetwork?
+    /// building on a host where NAT is blocked (e.g. behind Zscaler / a corporate IP allow
+    /// list). HOST-SPECIFIC — the interface name belongs to the build machine, not the image —
+    /// so prefer the `--network` flag on `graft sapling grow` over baking it into a shareable
+    /// seed. `var` so that flag can override it. Kept in the schema as an optional default.
+    public var network: VMNetwork?
 
     public struct GitConfig: Codable, Sendable, Equatable {
         public let user: String?
