@@ -2,8 +2,9 @@ import SwiftUI
 import AppKit
 import GraftCore
 
-/// Identifiable wrapper so a profile name can drive a `.sheet(item:)`.
-struct EditTarget: Identifiable { let id = UUID(); let name: String }
+/// Identifiable wrapper so a profile name can drive a `.sheet(item:)`. `isNew` opens the
+/// same settings sheet in create mode (editable name, Save creates the profile).
+struct EditTarget: Identifiable { let id = UUID(); let name: String; var isNew = false }
 
 /// The Profiles section — list every profile, show which is active + a one-line summary,
 /// switch the active one (restart-aware, via the runtime controller), create a skeleton
@@ -14,10 +15,12 @@ struct ProfilesView: View {
     @ObservedObject var controller: GraftController
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
-    @State private var creating = false
-    @State private var newName = ""
     @State private var pendingDelete: String?
     @State private var editTarget: EditTarget?
+    /// Auth-check (the GUI's `arborist check`) state, keyed by the profile being checked.
+    @State private var checkResults: [ConfigStore.CheckResult]?
+    @State private var checkTitle = ""
+    @State private var checkingProfile: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -27,7 +30,7 @@ struct ProfilesView: View {
                 Button { revealProfilesFolder() } label: {
                     Label("Show in Finder", systemImage: "folder")
                 }
-                Button { newName = ""; creating = true } label: {
+                Button { editTarget = EditTarget(name: "", isNew: true) } label: {
                     Label("New profile", systemImage: "plus")
                 }
             }
@@ -44,9 +47,11 @@ struct ProfilesView: View {
             }
         }
         .onAppear { config.reload() }
-        .sheet(isPresented: $creating) { createSheet }
         .sheet(item: $editTarget) { target in
-            ProfileSettingsSheet(name: target.name, config: config)
+            ProfileSettingsSheet(name: target.name, isNew: target.isNew, config: config)
+        }
+        .sheet(isPresented: Binding(get: { checkResults != nil }, set: { if !$0 { checkResults = nil } })) {
+            AuthCheckSheet(title: checkTitle, results: checkResults ?? [])
         }
         .confirmationDialog(
             "Delete profile “\(pendingDelete ?? "")”?",
@@ -93,6 +98,19 @@ struct ProfilesView: View {
                 .disabled(controller.isRunning)
                 .help(controller.isRunning ? "Stop the fleet to switch the active profile" : "Make this the active profile")
             }
+            Button {
+                checkingProfile = name
+                Task {
+                    let results = await config.verifyProfile(name)
+                    checkTitle = "\(name) — auth check"
+                    checkResults = results
+                    checkingProfile = nil
+                }
+            } label: {
+                if checkingProfile == name { ProgressView().controlSize(.small) } else { Text("Check") }
+            }
+            .disabled(checkingProfile != nil)
+            .help("Verify GitHub App auth end-to-end (creates + deletes a probe runner)")
             Button("Edit") { editTarget = EditTarget(name: name) }
             Button(role: .destructive) { pendingDelete = name } label: {
                 Image(systemName: "trash")
@@ -123,30 +141,13 @@ struct ProfilesView: View {
             GraftMark(size: 40, color: Color(nsColor: .tertiaryLabelColor))
             Text("No profiles").font(.headline)
             Text("Create one to configure a fleet.").font(.subheadline).foregroundStyle(.secondary)
+            Button { editTarget = EditTarget(name: "", isNew: true) } label: {
+                Label("New profile", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
-    }
-
-    private var createSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New profile").font(.headline)
-            TextField("Name (e.g. local, work-fleet)", text: $newName)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 300)
-                .onSubmit { if config.create(newName) { creating = false } }
-            Text("Creates a local-Tart profile with no pools — add pools + secrets next.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel") { creating = false }
-                Button("Create") { if config.create(newName) { creating = false } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 360)
     }
 }
 
@@ -155,20 +156,32 @@ struct ProfilesView: View {
 /// not here — it lives in the Keychain (Secrets section).
 struct ProfileSettingsSheet: View {
     let name: String
+    /// Create mode: editable name, Save creates a new profile. Editing: name is fixed.
+    var isNew = false
     @ObservedObject var config: ConfigStore
     @Environment(\.dismiss) private var dismiss
 
+    @State private var profileName = ""
     @State private var loaded: GraftConfig?
+    @State private var pools: [PoolConfig] = []
+    @State private var poolDraft: PoolDraft?
+    @State private var importing = false
     @State private var orchard = false
     @State private var controllerURL = ""
     @State private var serviceAccount = ""
     @State private var maxVMs = ""
+    /// Which keychain the Orchard service-account token lives in — follows the chosen
+    /// account, recorded as `orchard.scope` on save.
+    @State private var orchardScope: KeychainScope = .login
     @State private var appID = ""
     @State private var target = ""
     @State private var runnerGroup = "1"
+    /// Which keychain the chosen App's key lives in — follows the App, recorded on save.
+    @State private var scope: KeychainScope = .login
 
-    /// Apps we hold a key for (dropdown source); targets the chosen App can reach.
-    @State private var apps: [KeychainSecretStore.StoredApp] = []
+    /// Apps we hold a key for, across both keychains (dropdown source, each tagged with its
+    /// scope); targets the chosen App can reach.
+    @State private var scopedApps: [ConfigStore.ScopedApp] = []
     @State private var targets: [String] = []
     @State private var targetsLoading = false
     /// false → GitHub was unreachable (no key / offline / timeout); show the manual hint.
@@ -176,10 +189,20 @@ struct ProfileSettingsSheet: View {
     @State private var creatingApp = false
     @State private var addingAccount = false
     @State private var tokenPresent = false
-    /// Service-account names already holding a token in the Keychain (reuse dropdown).
-    @State private var orchardAccounts: [String] = []
+    /// Service accounts holding a token in either keychain (reuse dropdown), each tagged
+    /// with its scope.
+    @State private var orchardAccounts: [ConfigStore.ScopedOrchardAccount] = []
+    /// Auth-check (the GUI's `arborist check`) state.
+    @State private var checkResults: [ConfigStore.CheckResult]?
+    @State private var checking = false
+
+    /// The profile's name: editable when creating, fixed when editing.
+    private var finalName: String { (isNew ? profileName : name).trimmingCharacters(in: .whitespaces) }
 
     private var valid: Bool {
+        if isNew {
+            guard !finalName.isEmpty, !config.profiles.contains(finalName) else { return false }
+        }
         guard orchard else { return true }
         return !controllerURL.trimmingCharacters(in: .whitespaces).isEmpty
             && URL(string: controllerURL) != nil
@@ -188,9 +211,18 @@ struct ProfileSettingsSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("\(name) — settings").font(.headline).padding(16)
+            Text(isNew ? "New profile" : "\(name) — settings").font(.headline).padding(16)
             Divider()
             Form {
+                if isNew {
+                    Section("Profile") {
+                        TextField("Name", text: $profileName, prompt: Text("e.g. local, work-fleet"))
+                        if !finalName.isEmpty, config.profiles.contains(finalName) {
+                            Text("A profile named “\(finalName)” already exists.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
                 Section("Backend") {
                     Picker("Provider", selection: $orchard) {
                         Text("Local Tart").tag(false)
@@ -200,9 +232,12 @@ struct ProfileSettingsSheet: View {
                         TextField("Controller URL", text: $controllerURL, prompt: Text("http://trunk.local:6120"))
                         LabeledContent("Service account") {
                             Menu {
-                                ForEach(orchardAccounts, id: \.self) { acct in
-                                    Button { serviceAccount = acct; refreshTokenPresence() } label: {
-                                        if acct == serviceAccount { Label(acct, systemImage: "checkmark") } else { Text(acct) }
+                                ForEach(orchardAccounts) { acct in
+                                    Button { serviceAccount = acct.account; orchardScope = acct.scope; refreshTokenPresence() } label: {
+                                        let label = "\(acct.account)  (\(acct.scope.rawValue))"
+                                        if acct.account == serviceAccount && acct.scope == orchardScope {
+                                            Label(label, systemImage: "checkmark")
+                                        } else { Text(label) }
                                     }
                                 }
                                 if !orchardAccounts.isEmpty { Divider() }
@@ -231,24 +266,22 @@ struct ProfileSettingsSheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 TextField("", text: $appID, prompt: Text("e.g. 4021920"))
-                                    .onSubmit { reloadTargets() }
+                                    .onSubmit { syncScopeToApp(); reloadTargets() }
                                 Menu("") {
-                                    ForEach(apps, id: \.id) { app in
-                                        Button(app.name.map { "\($0)  (\(String(app.id)))" } ?? "App \(String(app.id))") {
-                                            appID = String(app.id); reloadTargets()
+                                    ForEach(scopedApps) { scoped in
+                                        Button(appLabel(scoped)) {
+                                            appID = String(scoped.app.id); scope = scoped.scope; reloadTargets()
                                         }
                                     }
-                                    if !apps.isEmpty { Divider() }
+                                    if !scopedApps.isEmpty { Divider() }
                                     Button { creatingApp = true } label: { Label("Create new App…", systemImage: "sparkles") }
+                                    Button { importing = true } label: { Label("Import a .pem…", systemImage: "square.and.arrow.down") }
                                 }
                                 .menuStyle(.borderlessButton)
                                 .fixedSize()
-                                .help("Keychain Apps, or create a new one")
+                                .help("Keychain Apps (login + system), create a new one, or import a .pem")
                             }
-                            if let id = Int(appID.trimmingCharacters(in: .whitespaces)),
-                               let name = apps.first(where: { $0.id == id })?.name {
-                                Text(name).font(.caption).foregroundStyle(.secondary)
-                            }
+                            appKeyCaption
                         }
                     }
                     LabeledContent("Target") {
@@ -277,13 +310,46 @@ struct ProfileSettingsSheet: View {
                         Text("Org runner-group id (Default = 1). Repos always use the default group.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("The App private key is set in the Secrets section.")
+                    Text("Create or import the key right here, or manage keys in the Secrets section.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Pools") {
+                    if pools.isEmpty {
+                        Text("No pools yet — add at least one (a workload's runners: image, count, labels).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(pools.enumerated()), id: \.offset) { idx, pool in
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 6) {
+                                        Text(pool.name).font(.body.weight(.medium))
+                                        Text("\(pool.os.rawValue) · ×\(pool.count)").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Text(pool.image).font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(1).truncationMode(.middle)
+                                }
+                                Spacer()
+                                Button("Edit") { poolDraft = PoolDraft(from: pool, index: idx) }
+                                Button(role: .destructive) { pools.remove(at: idx) } label: { Image(systemName: "trash") }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    Button { poolDraft = PoolDraft() } label: { Label("Add pool", systemImage: "plus") }
                 }
             }
             .formStyle(.grouped)
             Divider()
             HStack {
+                Button {
+                    guard let gh = currentGitHub() else { return }
+                    checking = true
+                    Task { let r = await config.verifyAuth(github: gh); checkResults = [r]; checking = false }
+                } label: {
+                    if checking { ProgressView().controlSize(.small) } else { Label("Verify auth", systemImage: "checkmark.shield") }
+                }
+                .disabled(checking || currentGitHub() == nil)
+                .help("Check the App→installation→token chain end-to-end (creates + deletes a probe runner)")
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Save") { save(); dismiss() }
@@ -292,57 +358,121 @@ struct ProfileSettingsSheet: View {
             }
             .padding(16)
         }
-        .frame(width: 460, height: 520)
+        .frame(width: 460, height: 600)
         .onAppear(perform: load)
         .sheet(isPresented: $creatingApp) {
-            CreateAppSheet { id in
+            CreateAppSheet { id, newScope in
                 appID = String(id)
-                apps = config.storedApps()
+                scope = newScope
+                scopedApps = config.scopedApps()
                 reloadTargets()
             }
         }
+        .sheet(isPresented: $importing) {
+            ImportKeySheet { id, pem, keyName, newScope in importKey(id: id, pem: pem, name: keyName, scope: newScope) }
+        }
         .sheet(isPresented: $addingAccount) {
-            AddOrchardAccountSheet { name, token in addAccount(name: name, token: token) }
+            AddOrchardAccountSheet(defaultScope: orchardScope) { name, token, scope in addAccount(name: name, token: token, scope: scope) }
+        }
+        .sheet(item: $poolDraft) { d in
+            PoolEditorSheet(draft: d, config: config) { applyPool($0) }
+        }
+        .sheet(isPresented: Binding(get: { checkResults != nil }, set: { if !$0 { checkResults = nil } })) {
+            AuthCheckSheet(title: "\(finalName.isEmpty ? "new profile" : finalName) — auth check", results: checkResults ?? [])
         }
     }
 
+    /// Store an imported .pem in the chosen keychain and select that App (mirrors the App
+    /// step of the CLI wizard's bundled flow).
+    private func importKey(id: Int, pem: String, name: String?, scope newScope: KeychainScope) {
+        try? KeychainSecretStore(scope: newScope).store(pem: pem, forAppID: id, name: name)
+        appID = String(id)
+        scope = newScope
+        scopedApps = config.scopedApps()
+        reloadTargets()
+    }
+
+    /// Apply a pool draft to the local list (the whole profile is written on Save).
+    private func applyPool(_ d: PoolDraft) {
+        let pool = d.toPool()
+        if let i = d.index, pools.indices.contains(i) { pools[i] = pool } else { pools.append(pool) }
+    }
+
+    /// Build a GitHubConfig from the current fields, or nil if App ID/target aren't ready.
+    private func currentGitHub() -> GitHubConfig? {
+        let cleanTarget = target.trimmingCharacters(in: .whitespaces)
+        guard let id = Int(appID.trimmingCharacters(in: .whitespaces)), !cleanTarget.isEmpty else { return nil }
+        let group = cleanTarget.hasPrefix("org:") ? (Int(runnerGroup.trimmingCharacters(in: .whitespaces)) ?? 1) : 1
+        return GitHubConfig(appId: id, target: cleanTarget, runnerGroupId: group, scope: scope)
+    }
+
+    /// Dropdown label for an App: "name (id) — scope" (or "App id — scope" with no name).
+    private func appLabel(_ scoped: ConfigStore.ScopedApp) -> String {
+        let base = scoped.app.name.map { "\($0)  (\(String(scoped.app.id)))" } ?? "App \(String(scoped.app.id))"
+        return "\(base) — \(scoped.scope.rawValue)"
+    }
+
+    /// Caption under the App ID: confirm the key (and where it lives), or warn it's missing.
+    @ViewBuilder private var appKeyCaption: some View {
+        if let id = Int(appID.trimmingCharacters(in: .whitespaces)) {
+            if let match = scopedApps.first(where: { $0.app.id == id }) {
+                Text("\(match.app.name.map { "\($0) · " } ?? "")key in \(match.scope.rawValue) keychain")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("⚠ no stored key for App \(id) — use Create or Import in the menu above")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// When an App ID is typed by hand, point `scope` at wherever its key actually lives.
+    private func syncScopeToApp() {
+        if let id = Int(appID.trimmingCharacters(in: .whitespaces)), let s = config.scope(forAppID: id) { scope = s }
+    }
+
     private func load() {
-        guard let c = config.config(name) else { return }
+        scopedApps = config.scopedApps()
+        orchardAccounts = config.scopedOrchardAccounts()
+        // Create mode starts from local-Tart defaults with no pools to fill in.
+        guard !isNew, let c = config.config(name) else { return }
         loaded = c
+        pools = c.pools
         if let o = c.orchard {
             orchard = true
             controllerURL = o.controllerURL.absoluteString
             serviceAccount = o.serviceAccount
             maxVMs = o.maxVMs.map(String.init) ?? ""
+            orchardScope = o.scope
         }
         if let gh = c.github {
             appID = String(gh.appId)
             target = gh.target
             runnerGroup = String(gh.runnerGroupId)
+            scope = gh.scope
         }
-        apps = config.storedApps()
-        orchardAccounts = config.storedOrchardAccounts()
         reloadTargets()
         refreshTokenPresence()
     }
 
-    // MARK: Orchard token (kept in the Keychain, keyed by service account)
+    // MARK: Orchard token (kept in the Keychain, keyed by service account + its scope)
 
-    private var tokenStore: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+    private var tokenStore: KeychainSecretStore { KeychainSecretStore(scope: orchardScope) }
 
     private func refreshTokenPresence() {
         let account = serviceAccount.trimmingCharacters(in: .whitespaces)
         tokenPresent = !account.isEmpty && tokenStore.hasOrchardToken(account: account)
     }
 
-    /// Add (or replace) a service account: store its token in the Keychain under `name` and
-    /// select it. Replacing is just re-adding the same name (store is delete-then-add).
-    private func addAccount(name: String, token: String) {
+    /// Add (or replace) a service account: store its token in the chosen keychain under
+    /// `name`, record that scope, and select it. Replacing is just re-adding (store is
+    /// delete-then-add).
+    private func addAccount(name: String, token: String, scope: KeychainScope) {
         let account = name.trimmingCharacters(in: .whitespaces)
         guard !account.isEmpty else { return }
-        try? tokenStore.storeOrchardToken(token, account: account)
+        orchardScope = scope
+        try? KeychainSecretStore(scope: scope).storeOrchardToken(token, account: account)
         serviceAccount = account
-        orchardAccounts = config.storedOrchardAccounts()
+        orchardAccounts = config.scopedOrchardAccounts()
         refreshTokenPresence()
     }
 
@@ -362,28 +492,26 @@ struct ProfileSettingsSheet: View {
     }
 
     private func save() {
-        guard var c = loaded ?? config.config(name) else { return }
+        // Editing preserves the rest of the config (monitor, etc.); creating starts fresh.
+        var c = isNew ? GraftConfig(provider: .tart) : (loaded ?? config.config(name) ?? GraftConfig())
         if orchard, let url = URL(string: controllerURL) {
             c.provider = .orchard(OrchardConfig(
                 controllerURL: url,
                 serviceAccount: serviceAccount.trimmingCharacters(in: .whitespaces),
                 token: c.orchard?.token,
-                maxVMs: Int(maxVMs.trimmingCharacters(in: .whitespaces))
+                maxVMs: Int(maxVMs.trimmingCharacters(in: .whitespaces)),
+                scope: orchardScope
             ))
         } else {
             c.provider = .tart
         }
-        let cleanTarget = target.trimmingCharacters(in: .whitespaces)
-        if let id = Int(appID.trimmingCharacters(in: .whitespaces)), !cleanTarget.isEmpty {
-            // Runner groups only exist for orgs; repo runners always use the default (1).
-            let group = cleanTarget.hasPrefix("org:")
-                ? (Int(runnerGroup.trimmingCharacters(in: .whitespaces)) ?? 1)
-                : 1
-            c.github = GitHubConfig(appId: id, target: cleanTarget, runnerGroupId: group)
-        } else {
-            c.github = nil
-        }
-        config.save(c, as: name)
+        // `scope` follows the chosen App (set when picked from the dropdown or typed), so
+        // the recorded keychain always matches where the key actually lives.
+        c.github = currentGitHub()
+        c.pools = pools
+        guard !finalName.isEmpty else { return }
+        config.save(c, as: finalName)
+        config.selected = finalName   // point the Pools/Secrets sections at it
     }
 }
 
@@ -392,11 +520,13 @@ struct ProfileSettingsSheet: View {
 /// token goes to the Keychain keyed by the name; graft never mints accounts (§ control-plane
 /// design doc) — it only stores what the admin issued.
 struct AddOrchardAccountSheet: View {
-    let onAdd: (_ name: String, _ token: String) -> Void
+    let defaultScope: KeychainScope
+    let onAdd: (_ name: String, _ token: String, _ scope: KeychainScope) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
     @State private var token = ""
+    @State private var scope: KeychainScope = .login
 
     private var valid: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty &&
@@ -411,17 +541,71 @@ struct AddOrchardAccountSheet: View {
             Form {
                 TextField("Account name", text: $name, prompt: Text("e.g. graft"))
                 SecureField("Token", text: $token)
+                Section("Store the token in") { KeychainScopePicker(scope: $scope) }
             }
             .formStyle(.grouped)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Add") { onAdd(name, token); dismiss() }
+                Button("Add") { onAdd(name, token, scope); dismiss() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!valid)
             }
         }
         .padding(20)
         .frame(width: 420)
+        .onAppear { scope = defaultScope }
+    }
+}
+
+/// Renders the result(s) of an auth check (the GUI's `graft arborist check`) — one section
+/// per App+target, each a list of ✓/✗ steps. Shared by Profiles, the profile editor, and
+/// Secrets. The header seal is green only when every step of every result passed.
+struct AuthCheckSheet: View {
+    let title: String
+    let results: [ConfigStore.CheckResult]
+    @Environment(\.dismiss) private var dismiss
+
+    private var allPassed: Bool { !results.isEmpty && results.allSatisfy(\.passed) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: allPassed ? "checkmark.seal.fill" : "xmark.seal.fill")
+                    .foregroundStyle(allPassed ? Color.green : .red)
+                Text(title).font(.headline)
+            }
+            .padding(16)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(results) { result in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(result.title).font(.subheadline.weight(.semibold))
+                            ForEach(result.steps) { step in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: step.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(step.ok ? Color.green : .red)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(step.label)
+                                        if let detail = step.detail {
+                                            Text(detail).font(.caption).foregroundStyle(.secondary)
+                                                .textSelection(.enabled)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack { Spacer(); Button("Done") { dismiss() }.buttonStyle(.borderedProminent) }
+                .padding(16)
+        }
+        .frame(width: 480, height: 440)
     }
 }

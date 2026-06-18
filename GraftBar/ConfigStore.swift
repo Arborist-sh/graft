@@ -27,16 +27,6 @@ final class ConfigStore: ObservableObject {
     /// The parsed config for a profile, or nil if missing/unreadable (e.g. an old-schema file).
     func config(_ name: String) -> GraftConfig? { try? Profiles.load(name) }
 
-    /// Create a fresh profile from a defaulted (local Tart, no pools) config. Returns false
-    /// if the name is empty or already taken.
-    @discardableResult
-    func create(_ name: String) -> Bool {
-        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, !Profiles.exists(clean) else { return false }
-        do { try Profiles.save(GraftConfig(), as: clean); reload(); return true }
-        catch { return false }
-    }
-
     func remove(_ name: String) {
         try? Profiles.remove(name)
         reload()
@@ -53,8 +43,7 @@ final class ConfigStore: ObservableObject {
     func orchardProvider(for name: String) -> OrchardProvider? {
         guard let cfg = config(name), var orchard = cfg.orchard else { return nil }
         if (orchard.token ?? "").isEmpty {
-            let scope = KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login
-            orchard.token = KeychainSecretStore(scope: scope).orchardToken(account: orchard.serviceAccount)
+            orchard.token = KeychainSecretStore(scope: orchard.scope).orchardToken(account: orchard.serviceAccount)
         }
         return OrchardProvider(config: orchard)
     }
@@ -62,10 +51,21 @@ final class ConfigStore: ObservableObject {
     /// True if the profile is configured for an Orchard fleet (vs local Tart).
     func isOrchard(_ name: String) -> Bool { config(name)?.orchard != nil }
 
-    /// Service-account names that already have an Orchard token in the Keychain — offered
-    /// in the profile editor so you can reuse one instead of re-pasting. Prompt-free.
-    func storedOrchardAccounts() -> [String] {
-        (try? KeychainSecretStore(scope: .login).storedOrchardAccounts()) ?? []
+    /// An Orchard service-account token plus the keychain it lives in.
+    struct ScopedOrchardAccount: Identifiable, Equatable {
+        let account: String
+        let scope: KeychainScope
+        var id: String { "\(account)|\(scope.rawValue)" }
+    }
+
+    /// Service accounts with a stored token across *both* keychains — offered in the profile
+    /// editor so you can reuse one instead of re-pasting, each tagged with its scope. Prompt-free.
+    func scopedOrchardAccounts() -> [ScopedOrchardAccount] {
+        let login = ((try? KeychainSecretStore(scope: .login).storedOrchardAccounts()) ?? [])
+            .map { ScopedOrchardAccount(account: $0, scope: .login) }
+        let system = ((try? KeychainSecretStore(scope: .system).storedOrchardAccounts()) ?? [])
+            .map { ScopedOrchardAccount(account: $0, scope: .system) }
+        return (login + system).sorted { $0.account < $1.account }
     }
 
     /// Local Tart images you can clone a pool from — `tart list` minus digest-pinned
@@ -87,20 +87,39 @@ final class ConfigStore: ObservableObject {
         }.value
     }
 
-    /// GitHub App IDs we hold a private key for, in the login Keychain — the natural set
-    /// of App IDs to offer in the profile editor. Attribute-only read, so no access prompt.
-    func storedAppIDs() -> [Int] {
-        ((try? KeychainSecretStore(scope: .login).storedAppIDs()) ?? []).sorted()
+    /// An App key plus the keychain it lives in — the GUI's per-secret unit, mirroring the
+    /// CLI's "scope travels with the App" model.
+    struct ScopedApp: Identifiable, Equatable {
+        let app: KeychainSecretStore.StoredApp
+        let scope: KeychainScope
+        var id: String { "\(app.id)|\(scope.rawValue)" }
+    }
+
+    /// Apps with a stored key across *both* keychains (login + system), each tagged with
+    /// where its key lives. Attribute-only reads, so no access prompt. Sorted by App ID.
+    func scopedApps() -> [ScopedApp] {
+        let login = ((try? KeychainSecretStore(scope: .login).storedApps()) ?? [])
+            .map { ScopedApp(app: $0, scope: .login) }
+        let system = ((try? KeychainSecretStore(scope: .system).storedApps()) ?? [])
+            .map { ScopedApp(app: $0, scope: .system) }
+        return (login + system).sorted { $0.app.id < $1.app.id }
     }
 
     /// Apps with a stored key, each with its display name if we've recorded one. Prompt-free.
-    func storedApps() -> [KeychainSecretStore.StoredApp] {
-        (try? KeychainSecretStore(scope: .login).storedApps()) ?? []
+    func storedApps() -> [KeychainSecretStore.StoredApp] { scopedApps().map(\.app) }
+
+    /// Which keychain holds an App's key — scan login then system (prompt-free). Nil if
+    /// neither has it. Used to read a key from the right place, and to record `github.scope`.
+    func scope(forAppID id: Int) -> KeychainScope? {
+        for scope in [KeychainScope.login, .system] {
+            if ((try? KeychainSecretStore(scope: scope).storedAppIDs()) ?? []).contains(id) { return scope }
+        }
+        return nil
     }
 
     /// The recorded display name for an App ID, or nil. Prompt-free.
     func appName(_ id: Int) -> String? {
-        storedApps().first { $0.id == id }?.name
+        scopedApps().first { $0.app.id == id }?.app.name
     }
 
     /// Backfill display names from GitHub for stored keys (`GET /app`). Reads each key, so
@@ -110,18 +129,18 @@ final class ConfigStore: ObservableObject {
     /// which it reports (and clears any stale name for) instead of mislabeling.
     /// Returns the count resolved plus any warnings to surface.
     func fetchAppNames(force: Bool = false) async -> (resolved: Int, warnings: [String]) {
-        let store = KeychainSecretStore(scope: .login)
         var resolved = 0
         var warnings: [String] = []
-        for app in storedApps() where force || app.name == nil {
-            let client = GitHubAppClient(appID: app.id, secrets: store)
+        for scoped in scopedApps() where force || scoped.app.name == nil {
+            let store = KeychainSecretStore(scope: scoped.scope)
+            let client = GitHubAppClient(appID: scoped.app.id, secrets: store)
             guard let info = try? await client.appInfo() else { continue }
-            if info.id == app.id {
-                try? await store.setName(info.name, forAppID: app.id)
+            if info.id == scoped.app.id {
+                try? await store.setName(info.name, forAppID: scoped.app.id)
                 resolved += 1
             } else {
-                try? await store.setName(nil, forAppID: app.id)
-                warnings.append("App \(app.id)'s key actually belongs to App \(info.id) (“\(info.name)”) — it's a wrong/duplicate import; remove it.")
+                try? await store.setName(nil, forAppID: scoped.app.id)
+                warnings.append("App \(scoped.app.id)'s key actually belongs to App \(info.id) (“\(info.name)”) — it's a wrong/duplicate import; remove it.")
             }
         }
         objectWillChange.send()
@@ -133,7 +152,7 @@ final class ConfigStore: ObservableObject {
     /// to manual entry; an empty array means "reached GitHub, nothing accessible". Bounded
     /// by a timeout because it's network I/O behind a dropdown.
     func accessibleTargets(appID: Int, timeout: Double = 8) async -> [String]? {
-        let client = GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: .login))
+        let client = GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: scope(forAppID: appID) ?? .login))
         return await withTaskGroup(of: [String]?.self) { group in
             group.addTask { try? await client.accessibleTargets() }
             group.addTask {
@@ -144,6 +163,112 @@ final class ConfigStore: ObservableObject {
             group.cancelAll()
             return result
         }
+    }
+
+    // MARK: Auth check (the GUI's `graft arborist check`)
+
+    /// One step of the auth chain, with its outcome — rendered as a ✓/✗ row.
+    struct CheckStep: Identifiable, Sendable {
+        let id = UUID()
+        let label: String
+        let ok: Bool
+        var detail: String?
+    }
+
+    /// The result of checking one App+target (or one bare key): a titled list of steps.
+    struct CheckResult: Identifiable, Sendable {
+        let id = UUID()
+        let title: String
+        var steps: [CheckStep]
+        var passed: Bool { steps.allSatisfy(\.ok) }
+    }
+
+    /// Verify a profile's GitHub auth end-to-end — the same chain as `graft arborist check`:
+    /// read key + sign App JWT → discover the installation → mint an installation token →
+    /// (optionally) create and immediately delete a throwaway probe runner. One result per
+    /// distinct App+target the profile registers against. Each App's key is read from its
+    /// own recorded scope. Network + Keychain I/O, so call off the main interaction.
+    func verifyProfile(_ name: String, probe: Bool = true) async -> [CheckResult] {
+        guard let cfg = config(name) else {
+            return [CheckResult(title: name, steps: [CheckStep(label: "load profile", ok: false, detail: "unreadable")])]
+        }
+        let targets = cfg.distinctGitHubConfigs()
+        guard !targets.isEmpty else {
+            return [CheckResult(title: name, steps: [CheckStep(label: "GitHub config", ok: false, detail: "no App/target set")])]
+        }
+        var results: [CheckResult] = []
+        for gh in targets { results.append(await verifyAuth(github: gh, probe: probe)) }
+        return results
+    }
+
+    /// Verify one GitHub App + target. Builds the client at the config's recorded scope.
+    func verifyAuth(github gh: GitHubConfig, probe: Bool = true) async -> CheckResult {
+        let client = GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope))
+        var steps: [CheckStep] = []
+        let title = "App \(gh.appId) · \(gh.target)"
+
+        let parsed: GitHubTarget
+        do { parsed = try gh.parsedTarget() }
+        catch { return CheckResult(title: title, steps: [CheckStep(label: "parse target", ok: false, detail: "\(error)")]) }
+
+        do { _ = try await client.makeAppJWT()
+            steps.append(CheckStep(label: "read key (\(gh.scope.rawValue) keychain) + sign App JWT", ok: true))
+        } catch {
+            steps.append(CheckStep(label: "sign App JWT", ok: false, detail: "\(error)")); return CheckResult(title: title, steps: steps)
+        }
+
+        do { let id = try await client.installationID(for: parsed)
+            steps.append(CheckStep(label: "found App installation", ok: true, detail: "#\(id)"))
+        } catch {
+            steps.append(CheckStep(label: "discover installation", ok: false, detail: "\(error)")); return CheckResult(title: title, steps: steps)
+        }
+
+        do { _ = try await client.installationAccessToken(for: parsed)
+            steps.append(CheckStep(label: "minted installation access token", ok: true))
+        } catch {
+            steps.append(CheckStep(label: "mint installation token", ok: false, detail: "\(error)")); return CheckResult(title: title, steps: steps)
+        }
+
+        if probe {
+            let probeName = "graft-doctor-" + UUID().uuidString.prefix(8).lowercased()
+            do {
+                let runner = try await client.generateJITRunner(github: gh, labels: ["self-hosted"], runnerName: probeName)
+                steps.append(CheckStep(label: "generated JIT config", ok: true, detail: "runner #\(runner.runnerID)"))
+                do { try await client.deleteRunner(id: runner.runnerID, target: parsed)
+                    steps.append(CheckStep(label: "deleted probe runner", ok: true, detail: "#\(runner.runnerID)"))
+                } catch {
+                    steps.append(CheckStep(label: "delete probe runner #\(runner.runnerID) — remove it in GitHub", ok: false, detail: "\(error)"))
+                }
+            } catch {
+                steps.append(CheckStep(label: "generate JIT config", ok: false, detail: "\(error)"))
+            }
+        }
+        return CheckResult(title: title, steps: steps)
+    }
+
+    /// Verify a bare App key (no profile/target): read key + sign App JWT, then list where
+    /// the App is installed. Confirms the stored key works and the App is installed
+    /// somewhere — the "check this secret" counterpart to the profile check.
+    func verifyKey(appID: Int, scope: KeychainScope) async -> CheckResult {
+        let client = GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: scope))
+        var steps: [CheckStep] = []
+        let title = "App \(appID) · \(scope.rawValue) keychain"
+        do { _ = try await client.makeAppJWT()
+            steps.append(CheckStep(label: "read key + sign App JWT", ok: true))
+        } catch {
+            steps.append(CheckStep(label: "read key + sign App JWT", ok: false, detail: "\(error)")); return CheckResult(title: title, steps: steps)
+        }
+        do {
+            let installs = try await client.installations()
+            if installs.isEmpty {
+                steps.append(CheckStep(label: "installed somewhere", ok: false, detail: "not installed on any org/repo yet"))
+            } else {
+                steps.append(CheckStep(label: "installed", ok: true, detail: installs.map(\.account.login).joined(separator: ", ")))
+            }
+        } catch {
+            steps.append(CheckStep(label: "list installations", ok: false, detail: "\(error)"))
+        }
+        return CheckResult(title: title, steps: steps)
     }
 
     // MARK: Nests (dev boxes)

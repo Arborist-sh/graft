@@ -11,21 +11,22 @@ struct SecretsView: View {
     @ObservedObject var config: ConfigStore
 
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
-    @State private var apps: [KeychainSecretStore.StoredApp] = []
+    @State private var apps: [ConfigStore.ScopedApp] = []
     @State private var importing = false
     @State private var creatingApp = false
     @State private var fetchingNames = false
-    @State private var pendingRemove: Int?
+    @State private var pendingRemove: ConfigStore.ScopedApp?
     @State private var status: String?
-
-    private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+    /// Auth-check (the GUI's `arborist check`) for a single key.
+    @State private var checkResults: [ConfigStore.CheckResult]?
+    @State private var checkingID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(Lex.secrets(vocab)).font(.title2.weight(.semibold))
                 Spacer()
-                Text("login keychain").font(.caption).foregroundStyle(.secondary)
+                Text("login + system keychains").font(.caption).foregroundStyle(.secondary)
             }
             .padding(16)
             Divider()
@@ -41,18 +42,23 @@ struct SecretsView: View {
         }
         .onAppear(perform: refresh)
         .sheet(isPresented: $importing) {
-            ImportKeySheet { id, pem, name in importKey(id: id, pem: pem, name: name) }
+            ImportKeySheet { id, pem, name, scope in importKey(id: id, pem: pem, name: name, scope: scope) }
         }
         .sheet(isPresented: $creatingApp) {
-            CreateAppSheet { id in status = "Created App \(id) — its key is stored."; refresh() }
+            CreateAppSheet { id, scope in status = "Created App \(id) — key stored in the \(scope.rawValue) keychain."; refresh() }
+        }
+        .sheet(isPresented: Binding(get: { checkResults != nil }, set: { if !$0 { checkResults = nil } })) {
+            AuthCheckSheet(title: "Key check", results: checkResults ?? [])
         }
         .confirmationDialog(
-            "Remove the key for App \(String(pendingRemove ?? 0))?",
+            "Remove the key for App \(String(pendingRemove?.app.id ?? 0))?",
             isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
             titleVisibility: .visible
         ) {
-            Button("Remove", role: .destructive) { if let id = pendingRemove { removeKey(id) }; pendingRemove = nil }
+            Button("Remove", role: .destructive) { if let p = pendingRemove { removeKey(p) }; pendingRemove = nil }
             Button("Cancel", role: .cancel) { pendingRemove = nil }
+        } message: {
+            Text("Removes it from the \(pendingRemove?.scope.rawValue ?? "login") keychain.")
         }
     }
 
@@ -78,16 +84,30 @@ struct SecretsView: View {
                 Text("No GitHub App private keys stored. Create a new App, or import an existing key.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
-                ForEach(apps, id: \.id) { app in
-                    HStack {
+                ForEach(apps) { scoped in
+                    HStack(spacing: 10) {
                         Image(systemName: "key.fill").foregroundStyle(.green)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(app.name ?? "App \(String(app.id))").font(.body.weight(.medium))
-                            Text(app.name != nil ? "App \(String(app.id))" : "no name yet")
+                            Text(scoped.app.name ?? "App \(String(scoped.app.id))").font(.body.weight(.medium))
+                            Text(scoped.app.name != nil ? "App \(String(scoped.app.id))" : "no name yet")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
+                        Text(scoped.scope.rawValue)
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            .foregroundStyle(.secondary)
                         Spacer()
-                        Button(role: .destructive) { pendingRemove = app.id } label: { Image(systemName: "trash") }
+                        Button {
+                            checkingID = scoped.id
+                            Task { let r = await config.verifyKey(appID: scoped.app.id, scope: scoped.scope); checkResults = [r]; checkingID = nil }
+                        } label: {
+                            if checkingID == scoped.id { ProgressView().controlSize(.small) }
+                            else { Text("Test") }
+                        }
+                        .disabled(checkingID != nil)
+                        .help("Verify this key signs an App JWT and the App is installed")
+                        Button(role: .destructive) { pendingRemove = scoped } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
                     }
                     .padding(.vertical, 4)
@@ -100,7 +120,7 @@ struct SecretsView: View {
     // MARK: Actions
 
     private func refresh() {
-        apps = config.storedApps()
+        apps = config.scopedApps()
     }
 
     private func fetchNames() {
@@ -117,19 +137,22 @@ struct SecretsView: View {
         }
     }
 
-    private func importKey(id: Int, pem: String, name: String?) {
+    private func importKey(id: Int, pem: String, name: String?, scope: KeychainScope) {
         do {
-            try store.store(pem: pem, forAppID: id, name: name)
-            status = "Stored key for \(name ?? "App \(String(id))")."
+            try KeychainSecretStore(scope: scope).store(pem: pem, forAppID: id, name: name)
+            status = "Stored key for \(name ?? "App \(String(id))") in the \(scope.rawValue) keychain."
             refresh()
         } catch {
             status = "Couldn't store key: \(error.localizedDescription)"
         }
     }
 
-    private func removeKey(_ id: Int) {
-        do { try store.remove(appID: id); status = "Removed key for App \(id)."; refresh() }
-        catch { status = "Couldn't remove key: \(error.localizedDescription)" }
+    private func removeKey(_ scoped: ConfigStore.ScopedApp) {
+        do {
+            try KeychainSecretStore(scope: scoped.scope).remove(appID: scoped.app.id)
+            status = "Removed key for App \(scoped.app.id) from the \(scoped.scope.rawValue) keychain."
+            refresh()
+        } catch { status = "Couldn't remove key: \(error.localizedDescription)" }
     }
 }
 
@@ -139,7 +162,7 @@ struct SecretsView: View {
 /// you pasted or renamed. (GitHub never exposes an existing key over the API, so the file
 /// is the one thing that must come from you.)
 struct ImportKeySheet: View {
-    let onImport: (Int, String, String?) -> Void
+    let onImport: (Int, String, String?, KeychainScope) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var appIDText = ""
@@ -147,6 +170,7 @@ struct ImportKeySheet: View {
     @State private var detectedName: String?
     @State private var looking = false
     @State private var note: String?
+    @State private var scope: KeychainScope = .login
 
     private var valid: Bool { Int(appIDText.trimmingCharacters(in: .whitespaces)) != nil && !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -169,13 +193,17 @@ struct ImportKeySheet: View {
                 .font(.system(size: 11, design: .monospaced))
                 .frame(height: 150)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.3)))
-            Text(note ?? "Choose the .pem GitHub gave you — graft auto-detects the App ID + name. Stored in your login Keychain, never written to disk by graft.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Store the key in").font(.subheadline)
+                KeychainScopePicker(scope: $scope)
+            }
+            Text(note ?? "Choose the .pem GitHub gave you — graft auto-detects the App ID + name. Stored in the Keychain, never written to disk by graft.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button("Import") {
-                    if let id = Int(appIDText.trimmingCharacters(in: .whitespaces)) { onImport(id, pem, detectedName); dismiss() }
+                    if let id = Int(appIDText.trimmingCharacters(in: .whitespaces)) { onImport(id, pem, detectedName, scope); dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!valid)
@@ -230,21 +258,22 @@ struct ImportKeySheet: View {
 /// no manual App ID copy, no .pem download. The user's only manual steps are clicking
 /// "Create" and (after) "Install" on github.com.
 struct CreateAppSheet: View {
-    /// Called with the new App's ID once it's created and its key stored. Lets the caller
-    /// refresh its key list and/or select the new App.
-    let onCreated: (Int) -> Void
+    /// Called with the new App's ID and the keychain its key was stored in, once it's
+    /// created. Lets the caller refresh its key list and/or select the new App.
+    let onCreated: (Int, KeychainScope) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var useOrg = false
     @State private var org = ""
     @State private var name = ""
+    @State private var scope: KeychainScope = .login
     @State private var running = false
     @State private var status: String?
     @State private var created: AppManifestFlow.Created?
     @State private var awaitingInstall = false
     @State private var installed = false
 
-    private var store: KeychainSecretStore { KeychainSecretStore(scope: .login) }
+    private var store: KeychainSecretStore { KeychainSecretStore(scope: scope) }
     private var orgValid: Bool { !useOrg || !org.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
@@ -264,6 +293,9 @@ struct CreateAppSheet: View {
                 } footer: {
                     Text("graft pre-fills the permissions runners need and turns webhooks off. You'll click “Create GitHub App” in your browser, then install it.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                if created == nil {
+                    Section("Store the key in") { KeychainScopePicker(scope: $scope) }
                 }
                 if let status {
                     Section { Text(status).font(.callout) }
@@ -353,7 +385,53 @@ struct CreateAppSheet: View {
 
     private func finish() {
         awaitingInstall = false
-        if let c = created { onCreated(c.appID) }
+        if let c = created { onCreated(c.appID, scope) }
         dismiss()
+    }
+}
+
+/// Pick where a key is stored: the login keychain, the system keychain, or a custom
+/// keychain by path. Mirrors the CLI wizard's storage prompt. Binds a `KeychainScope`.
+struct KeychainScopePicker: View {
+    @Binding var scope: KeychainScope
+
+    private enum Mode { case login, system, file }
+    @State private var mode: Mode = .login
+    @State private var path = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("", selection: $mode) {
+                Text("Login").tag(Mode.login)
+                Text("System").tag(Mode.system)
+                Text("Other…").tag(Mode.file)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: mode) { syncOut() }
+            if mode == .file {
+                TextField("Keychain path", text: $path, prompt: Text("/path/to/Custom.keychain"))
+                    .onChange(of: path) { syncOut() }
+            }
+            if mode == .system {
+                Text("Writing the system keychain needs admin rights — macOS will prompt.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            switch scope {
+            case .login: mode = .login
+            case .system: mode = .system
+            case .file(let p): mode = .file; path = p
+            }
+        }
+    }
+
+    private func syncOut() {
+        switch mode {
+        case .login: scope = .login
+        case .system: scope = .system
+        case .file: scope = .file(path)
+        }
     }
 }
