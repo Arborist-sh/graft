@@ -223,7 +223,7 @@ extension Image {
 
         func run() async throws {
             printErr("pulling \(ref)…")
-            try await Tart.pull(ref: ref)
+            try await withInterruptHandling { try await Tart.pull(ref: ref) }
             printErr("✓ pulled \(ref)")
         }
     }

@@ -54,7 +54,6 @@ enum SidebarGroup: String, CaseIterable, Identifiable {
 struct RootView: View {
     @ObservedObject var controller: GraftController
     @StateObject private var config = ConfigStore()
-    @StateObject private var seedStore = SeedEditorModel()
     @State private var section: AppSection? = .dashboard
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
@@ -77,7 +76,7 @@ struct RootView: View {
             case .canopy:    CanopyView(config: config)
             case .nests:     NestsView(config: config)
             case .saplings:  SaplingsView(config: config)
-            case .seeds:     SeedsView(config: config, store: seedStore)
+            case .seeds:     SeedsView(config: config)
             case .profiles:  ProfilesView(config: config, controller: controller)
             case .pools:     PoolsView(config: config)
             case .secrets:   SecretsView(config: config)

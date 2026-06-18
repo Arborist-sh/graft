@@ -87,6 +87,22 @@ final class ConfigStore: ObservableObject {
         }.value
     }
 
+    /// Saplings (golden + pulled base images) as full `TartVM` rows — same filter as
+    /// `localImages()` but keeps `source`/`size` for provenance display in the list.
+    func saplings() async -> [TartVM] {
+        await Task.detached(priority: .userInitiated) { () -> [TartVM] in
+            guard let tart = Self.tartPath else { return [] }
+            let out = Self.capture(tart, ["list", "--format", "json"])
+            guard let data = out.data(using: .utf8),
+                  let vms = try? JSONDecoder().decode([TartVM].self, from: data) else { return [] }
+            var seen = Set<String>()
+            return vms
+                .filter { !$0.name.contains("@sha256:") && !$0.name.hasPrefix("graft-") && !$0.name.hasPrefix("orchard-graft-") }
+                .filter { seen.insert($0.name).inserted }
+                .sorted { $0.name < $1.name }
+        }.value
+    }
+
     /// An App key plus the keychain it lives in — the GUI's per-secret unit, mirroring the
     /// CLI's "scope travels with the App" model.
     struct ScopedApp: Identifiable, Equatable {
@@ -349,6 +365,63 @@ final class ConfigStore: ObservableObject {
         guard let graft = Self.graftPath else { return }
         runInTerminal("\(graft) sapling grow --seed '\(seedPath)'; exec $SHELL -il")
     }
+
+    // MARK: Seed library (~/.graft/seeds)
+
+    /// All seeds in the local library (file stems), sorted.
+    func seedNames() -> [String] { Seeds.names() }
+
+    /// Parsed recipe for a seed (for the list summary), or nil if it won't parse.
+    func seedRecipe(_ name: String) -> ImageRecipe? { Seeds.recipe(name) }
+
+    /// The raw `.graft` text of a seed (empty if missing).
+    func readSeed(_ name: String) -> String { (try? Seeds.read(name)) ?? "" }
+
+    func seedExists(_ name: String) -> Bool { Seeds.exists(name) }
+    func seedPath(_ name: String) -> String { Seeds.path(for: name) }
+
+    /// Write a seed, optionally removing a prior file when the name changed (a rename).
+    @discardableResult
+    func saveSeed(_ body: String, as name: String, renamingFrom old: String? = nil) -> Bool {
+        do {
+            try Seeds.write(body, as: name)
+            if let old, old != name, Seeds.exists(old) { try? Seeds.remove(old) }
+            objectWillChange.send()
+            return true
+        } catch { return false }
+    }
+
+    func removeSeed(_ name: String) { try? Seeds.remove(name); objectWillChange.send() }
+
+    /// Duplicate a seed: copy its text under a fresh `<name>-copy` and rewrite the recipe's
+    /// `name` to match (identity stays = recipe name). Returns the new name.
+    @discardableResult
+    func duplicateSeed(_ name: String) -> String? {
+        guard let body = try? Seeds.read(name) else { return nil }
+        let newName = Seeds.uniqueName(basedOn: name)
+        let out: String
+        if var r = try? ImageRecipe.parse(body) { r.name = newName; out = (try? r.yamlString()) ?? body }
+        else { out = body }   // unparseable: copy verbatim
+        return saveSeed(out, as: newName) ? newName : nil
+    }
+
+    /// Import an external `.graft` into the library, keyed by its recipe name (or file stem),
+    /// disambiguated if that name is taken. Returns the name it landed under.
+    @discardableResult
+    func importSeed(from url: URL) -> String? {
+        guard let body = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let parsed = try? ImageRecipe.parse(body)
+        let preferred = parsed.map { $0.name.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
+            ?? url.deletingPathExtension().lastPathComponent
+        let name = Seeds.exists(preferred) ? Seeds.uniqueName(basedOn: preferred) : preferred
+        let out: String
+        if name != preferred, var r = parsed { r.name = name; out = (try? r.yamlString()) ?? body }
+        else { out = body }
+        return saveSeed(out, as: name) ? name : nil
+    }
+
+    /// Grow a sapling from a library seed (terminal stream).
+    func growSeed(_ name: String) { growSapling(seedPath: Seeds.path(for: name)) }
 
     // MARK: Seeds (.graft recipes)
 

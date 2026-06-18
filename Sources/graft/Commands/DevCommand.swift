@@ -127,7 +127,7 @@ extension Dev {
                 let img: String
                 if let image { img = image } else { img = await ImagePicker.resolve() }
                 mark(.creating, "creating from \(img)")
-                try await Tart.ensureAvailable(img)
+                try await withInterruptHandling { try await Tart.ensureAvailable(img) }   // Ctrl-C cancels the pull
                 printErr("creating \(vmName) from \(img)…")
                 try await Tart.clone(image: img, to: vmName)
             }

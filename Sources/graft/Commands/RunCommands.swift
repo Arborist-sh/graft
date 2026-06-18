@@ -46,8 +46,12 @@ struct Run: AsyncParsableCommand {
         // the live UI starts, so the first runner doesn't silently hang on a big download.
         // Orchard workers pull images themselves (image-pull-policy), so skip it there.
         if case .tart = cfg.provider {
-            for image in Set(cfg.pools.map(\.image)).sorted() {
-                try await Tart.ensureAvailable(image)
+            // Ctrl-C during a pre-flight pull cancels it (and the tart child) instead of
+            // orphaning the download — the supervisor installs its own trap further down.
+            try await withInterruptHandling {
+                for image in Set(cfg.pools.map(\.image)).sorted() {
+                    try await Tart.ensureAvailable(image)
+                }
             }
         }
 
