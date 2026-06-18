@@ -57,6 +57,7 @@ struct Check: AsyncParsableCommand {
 
     func run() async throws {
         let targets: [GitHubConfig]
+        var secretsCfg: SecretsConfig?   // profile mode → honor secrets.store (file vs keychain)
 
         if appId != nil || target != nil {
             // Ad-hoc mode: an explicit App/target was given — check that one (prompt for
@@ -78,6 +79,7 @@ struct Check: AsyncParsableCommand {
             // config carries its own keychain scope.
             let path = GraftConfig.resolvePath(explicit: config, profile: profile)
             let cfg = try GraftConfig.load(from: path)
+            secretsCfg = cfg.secrets
             let filtered = pool.map { name in cfg.pools.filter { $0.name == name } } ?? cfg.pools
             guard !filtered.isEmpty else {
                 throw GraftError(pool.map { "no pool named '\($0)'" }
@@ -91,7 +93,7 @@ struct Check: AsyncParsableCommand {
             }
         }
 
-        let allPassed = await Self.verify(targets: targets, probe: !noProbe)
+        let allPassed = await Self.verify(targets: targets, probe: !noProbe, secrets: secretsCfg)
         if !allPassed { throw ExitCode.failure }
         print("\nall checks passed ✓  — GitHub App auth is wired correctly")
     }
@@ -102,21 +104,22 @@ struct Check: AsyncParsableCommand {
     /// keychain scope. Prints progress; returns true iff every step of every target passed.
     /// Shared by `arborist check` and the `init` wizard's verify step.
     @discardableResult
-    static func verify(targets: [GitHubConfig], probe: Bool = true) async -> Bool {
+    static func verify(targets: [GitHubConfig], probe: Bool = true, secrets: SecretsConfig? = nil) async -> Bool {
         func ok(_ message: String) { print("  ✓ \(message)") }
         func fail(_ step: String, _ error: Error) { printErr("  ✗ \(step): \(error)") }
 
         var failed = false
         for gh in targets {
-            let client = GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope))
-            let scope = gh.scope
+            let store = secrets?.makeStore(scope: gh.scope) ?? KeychainSecretStore(scope: gh.scope)
+            let client = GitHubAppClient(appID: gh.appId, secrets: store)
+            let source = secrets?.usesFileStore == true ? "file store" : "\(gh.scope.rawValue) keychain"
             print("── app \(gh.appId), \(gh.target) ──")
 
             let parsedTarget: GitHubTarget
             do { parsedTarget = try gh.parsedTarget() }
             catch { fail("parse target", error); failed = true; continue }
 
-            do { _ = try await client.makeAppJWT(); ok("read key from \(scope.rawValue) keychain + signed App JWT") }
+            do { _ = try await client.makeAppJWT(); ok("read key from \(source) + signed App JWT") }
             catch { fail("sign App JWT", error); failed = true; continue }
 
             do {

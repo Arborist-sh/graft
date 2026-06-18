@@ -21,10 +21,10 @@ extension Runners {
         var profile: String?
 
         func run() async throws {
-            let targets = try profileTargets(profile: profile)
+            let (cfg, targets) = try profileTargets(profile: profile)
             for gh in targets {
                 let parsed = try gh.parsedTarget()
-                let client = GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope))
+                let client = GitHubAppClient(appID: gh.appId, secrets: cfg.secretStore(scope: gh.scope))
                 let runners = try await client.listRunners(target: parsed)
                     .filter { $0.name.hasPrefix(LocalTartProvider.namePrefix) }
                 print("── app \(gh.appId), \(gh.target) ──")
@@ -46,11 +46,11 @@ extension Runners {
         var includeOnline = false
 
         func run() async throws {
-            let targets = try profileTargets(profile: profile)
+            let (cfg, targets) = try profileTargets(profile: profile)
             var deleted = 0
             for gh in targets {
                 let parsed = try gh.parsedTarget()
-                let client = GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope))
+                let client = GitHubAppClient(appID: gh.appId, secrets: cfg.secretStore(scope: gh.scope))
                 let husks = try await client.listRunners(target: parsed).filter {
                     $0.name.hasPrefix(LocalTartProvider.namePrefix) && (includeOnline || $0.isOffline)
                 }
@@ -76,12 +76,12 @@ extension Runners {
 /// The distinct (app, target) GitHub configs a profile's pools register against
 /// (resolved: each pool's override, else the profile default). Deduped so a target shared
 /// by several pools is hit once. Each config carries its own keychain `scope`.
-private func profileTargets(profile: String?) throws -> [GitHubConfig] {
+private func profileTargets(profile: String?) throws -> (cfg: GraftConfig, targets: [GitHubConfig]) {
     let name = try resolveProfileName(profile)
     let cfg = try Profiles.load(name)
     let githubs = cfg.pools.compactMap { cfg.gitHub(for: $0) }
     guard !githubs.isEmpty else { throw GraftError("profile '\(name)' has no GitHub config") }
 
     var seen = Set<String>()
-    return githubs.filter { seen.insert("\($0.appId)|\($0.target)").inserted }
+    return (cfg, githubs.filter { seen.insert("\($0.appId)|\($0.target)").inserted })
 }

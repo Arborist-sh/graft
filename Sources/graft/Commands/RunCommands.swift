@@ -77,12 +77,12 @@ struct Run: AsyncParsableCommand {
         let reporter: RunnerStatusReporter? = dashboard.map { (d: LiveDashboard) -> RunnerStatusReporter in
             { tag, vm, phase in d.update(slot: tag, vm: vm, phase: phase) }
         }
-        let secrets = KeychainSecretStore(scope: monitorScope)
+        let secrets = cfg.secretStore(scope: monitorScope)
         let supervisor = PoolSupervisor(
             config: cfg,
             provider: provider,
             github: { appID in
-                GitHubAppClient(appID: appID, secrets: KeychainSecretStore(scope: cfg.scope(forAppID: appID)))
+                GitHubAppClient(appID: appID, secrets: cfg.secretStore(scope: cfg.scope(forAppID: appID)))
             },
             status: reporter
         )

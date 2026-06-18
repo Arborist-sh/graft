@@ -81,7 +81,7 @@ extension Image {
             let clients = ([cfg.github] + cfg.pools.map { cfg.gitHub(for: $0) })
                 .compactMap { $0 }
                 .filter { seen.insert($0.appId).inserted }
-                .map { gh in GitHubAppClient(appID: gh.appId, secrets: KeychainSecretStore(scope: gh.scope)) }
+                .map { gh in GitHubAppClient(appID: gh.appId, secrets: cfg.secretStore(scope: gh.scope)) }
             guard !clients.isEmpty else { return nil }
             return { url in
                 guard let slug = ImageRecipe.githubSlug(from: url) else { return nil }
