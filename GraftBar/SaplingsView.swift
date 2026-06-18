@@ -16,6 +16,9 @@ struct SaplingsView: View {
     @State private var pendingRemove: String?
     @State private var editingSeed: EditingSeed?
     @State private var status: String?
+    /// Host-specific build network for grows on THIS machine (e.g. "bridged:en0"); empty = NAT.
+    /// Shared with the Seeds tab via the same key; maps to `grow --network`, never baked into a seed.
+    @AppStorage("graft.buildNetwork") private var buildNetwork = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,6 +55,12 @@ struct SaplingsView: View {
             Spacer()
             if loading { ProgressView().controlSize(.small) }
             Button { reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+            HStack(spacing: 4) {
+                Image(systemName: "network").foregroundStyle(.secondary)
+                TextField("nat | bridged:en0", text: $buildNetwork)
+                    .textFieldStyle(.roundedBorder).frame(width: 130)
+            }
+            .help("Build-VM network for grows on THIS machine (e.g. bridged:en0 behind a corporate IP allow list). Host-specific — applied as `--network`, never saved into the seed.")
             Menu {
                 if seeds.isEmpty {
                     Text("No seeds in your library yet")
@@ -141,7 +150,7 @@ struct SaplingsView: View {
 
     /// Grow one of the library seeds (terminal stream); it'll appear here after a Refresh.
     private func growSeed(_ name: String) {
-        config.growSeed(name)
+        config.growSeed(name, network: buildNetwork)
         status = "Growing \(name) — watch the terminal, then Refresh."
     }
 
@@ -153,7 +162,7 @@ struct SaplingsView: View {
         panel.canChooseDirectories = false
         panel.message = "Choose a .graft seed (also YAML / JSON)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        config.growSapling(seedPath: url.path)
+        config.growSapling(seedPath: url.path, network: buildNetwork)
         status = "Growing — watch the terminal, then Refresh."
     }
 

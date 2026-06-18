@@ -361,9 +361,12 @@ final class ConfigStore: ObservableObject {
 
     /// Grow a sapling from a `.graft` seed — `graft sapling grow -f <seed>` in a terminal
     /// (the build streams a lot of output and takes a while).
-    func growSapling(seedPath: String) {
+    /// `network` (host-specific, e.g. "bridged:en0") maps to `--network` — empty = NAT default.
+    func growSapling(seedPath: String, network: String = "") {
         guard let graft = Self.graftPath else { return }
-        runInTerminal("\(graft) sapling grow --seed '\(seedPath)'; exec $SHELL -il")
+        let net = network.trimmingCharacters(in: .whitespaces)
+        let netFlag = net.isEmpty ? "" : " --network '\(net)'"
+        runInTerminal("\(graft) sapling grow --seed '\(seedPath)'\(netFlag); exec $SHELL -il")
     }
 
     // MARK: Seed library (~/.graft/seeds)
@@ -420,8 +423,8 @@ final class ConfigStore: ObservableObject {
         return saveSeed(out, as: name) ? name : nil
     }
 
-    /// Grow a sapling from a library seed (terminal stream).
-    func growSeed(_ name: String) { growSapling(seedPath: Seeds.path(for: name)) }
+    /// Grow a sapling from a library seed (terminal stream). `network` → `--network` (host-specific).
+    func growSeed(_ name: String, network: String = "") { growSapling(seedPath: Seeds.path(for: name), network: network) }
 
     // MARK: Seeds (.graft recipes)
 

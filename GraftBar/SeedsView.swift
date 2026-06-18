@@ -14,6 +14,10 @@ struct SeedsView: View {
     @State private var editing: EditingSeed?
     @State private var pendingDelete: String?
     @State private var status: String?
+    /// Host-specific build network applied to grows on THIS machine (e.g. "bridged:en0").
+    /// Empty = NAT default. Per-machine (the interface name isn't portable), so it lives in
+    /// app prefs and maps to `grow --network` — deliberately NOT baked into the shareable seed.
+    @AppStorage("graft.buildNetwork") private var buildNetwork = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -45,6 +49,12 @@ struct SeedsView: View {
             Text(Lex.seeds(vocab)).font(.title2.weight(.semibold))
             if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
             Spacer()
+            HStack(spacing: 4) {
+                Image(systemName: "network").foregroundStyle(.secondary)
+                TextField("nat | bridged:en0", text: $buildNetwork)
+                    .textFieldStyle(.roundedBorder).frame(width: 130)
+            }
+            .help("Build-VM network for grows on THIS machine (e.g. bridged:en0 behind a corporate IP allow list). Host-specific — applied as `--network`, never saved into the seed.")
             Button { importSeed() } label: { Label("Import…", systemImage: "square.and.arrow.down") }
             Button { editing = EditingSeed(name: nil) } label: { Label("New seed", systemImage: "plus") }
         }
@@ -86,7 +96,7 @@ struct SeedsView: View {
                 if let n = config.duplicateSeed(name) { reload(); status = "Duplicated → \(n)" }
             }
             Button("Grow") {
-                config.growSeed(name)
+                config.growSeed(name, network: buildNetwork)
                 status = "Growing \(name) — watch the terminal; it'll appear in Saplings when done."
             }
             .disabled(!config.graftAvailable)
@@ -310,7 +320,6 @@ struct SeedEditorSheet: View {
                     Spacer(); removeX(comp)
                 }
             }
-        case .network: fieldRow(comp, $form.network, "nat | bridged:en0 | softnet")
         }
     }
 

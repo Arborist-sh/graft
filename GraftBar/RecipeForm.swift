@@ -29,7 +29,7 @@ enum Comp: String, CaseIterable, Identifiable {
     // system
     case env, write, labels, git, timezone, hostname, knownHosts, disableSpotlight, disableSleep, description
     // vm
-    case vmShape, os, network
+    case vmShape, os
 
     var id: String { rawValue }
 
@@ -46,7 +46,7 @@ enum Comp: String, CaseIterable, Identifiable {
         case .env: "Env vars"; case .write: "Write files"; case .labels: "Labels"; case .git: "Git identity"
         case .timezone: "Timezone"; case .hostname: "Hostname"; case .knownHosts: "Known hosts"
         case .disableSpotlight: "Disable Spotlight"; case .disableSleep: "Disable sleep"; case .description: "Description"
-        case .vmShape: "VM shape"; case .os: "Guest OS"; case .network: "Build network"
+        case .vmShape: "VM shape"; case .os: "Guest OS"
         }
     }
 
@@ -68,7 +68,7 @@ enum Comp: String, CaseIterable, Identifiable {
         case .scripts, .scriptFile: .scripts
         case .prefetch, .verify, .repos, .podRepoWarm, .cleanup: .caches
         case .env, .write, .labels, .git, .timezone, .hostname, .knownHosts, .disableSpotlight, .disableSleep, .description: .system
-        case .vmShape, .os, .network: .vm
+        case .vmShape, .os: .vm
         }
     }
 }
@@ -93,8 +93,11 @@ struct RecipeForm: Equatable {
     var scriptFile = ""
     var scripts: [ScriptRow] = []
     var os: GuestOS = .macOS
-    var network = ""
-    var mounts: [Mount]?   // carried through verbatim
+    // Carried through verbatim — NOT builder components. `network` is host-specific (the
+    // interface name belongs to the build machine, not the shareable seed), so it's set per-run
+    // via `grow --network`, never edited here; `mounts` has no builder UI either.
+    var mounts: [Mount]?
+    var network: VMNetwork?
 
     init() {}
 
@@ -141,7 +144,7 @@ struct RecipeForm: Equatable {
         disk = r.disk.map(String.init) ?? ""; display = r.display ?? ""
         set(.vmShape, r.cpu != nil || r.memory != nil || r.disk != nil || r.display != nil)
         os = r.os ?? .macOS; set(.os, r.os != nil)
-        network = r.network?.specString ?? ""; set(.network, r.network != nil)
+        network = r.network              // carried verbatim; not a builder component
         mounts = r.mounts
         active = a
     }
@@ -170,7 +173,7 @@ struct RecipeForm: Equatable {
             disk: on(.vmShape) ? i(disk) : nil, display: on(.vmShape) ? s(display) : nil,
             run: on(.scripts) ? scripts.map(\.body).compactMap(s) : [],
             script: sv(.scriptFile, scriptFile), mounts: mounts, os: on(.os) ? os : nil,
-            network: on(.network) ? s(network).flatMap { try? VMNetwork(spec: $0) } : nil
+            network: network          // carried through; set per-host via `grow --network`
         )
     }
 
@@ -189,7 +192,6 @@ struct RecipeForm: Equatable {
         case .timezone: timezone = ""; case .hostname: hostname = ""; case .description: description = ""
         case .knownHosts: knownHosts = []
         case .vmShape: cpu = ""; memory = ""; disk = ""; display = ""
-        case .network: network = ""
         case .go, .fastlane, .xcodeFirstLaunch, .podRepoWarm, .cleanup, .disableSpotlight, .disableSleep, .os: break
         }
     }
