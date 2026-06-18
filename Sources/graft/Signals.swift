@@ -13,6 +13,7 @@ import Foundation
 /// disposition and our `terminate()` (SIGTERM) actually stops it. (Trapping SIGTERM too
 /// would be inherited as `SIG_IGN` across exec and the child would ignore terminate() — see
 /// `SignalTrap`.) On interrupt, prints a note and exits 130.
+@discardableResult
 func withInterruptHandling<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
     let interrupted = AtomicFlag()
     signal(SIGINT, SIG_IGN)
