@@ -9,10 +9,13 @@ struct SaplingsView: View {
     @ObservedObject var config: ConfigStore
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
-    @State private var images: [String] = []
+    @State private var images: [TartVM] = []
+    @State private var seeds: [String] = []
     @State private var loading = false
     @State private var pulling = false
     @State private var pendingRemove: String?
+    @State private var editingSeed: EditingSeed?
+    @State private var status: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,6 +26,9 @@ struct SaplingsView: View {
         .onAppear { reload() }
         .sheet(isPresented: $pulling) {
             PullSaplingSheet { ref in config.pullSapling(ref: ref) }
+        }
+        .sheet(item: $editingSeed, onDismiss: reload) { target in
+            SeedEditorSheet(config: config, editing: target.name)
         }
         .confirmationDialog(
             "Remove image “\(pendingRemove ?? "")”?",
@@ -42,12 +48,22 @@ struct SaplingsView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Text(Lex.images(vocab)).font(.title2.weight(.semibold))
+            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
             Spacer()
             if loading { ProgressView().controlSize(.small) }
             Button { reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-            Button { grow() } label: { Label("Grow…", systemImage: "hammer") }
+            Menu {
+                if seeds.isEmpty {
+                    Text("No seeds in your library yet")
+                } else {
+                    ForEach(seeds, id: \.self) { s in Button(s) { growSeed(s) } }
+                }
+                Divider()
+                Button("From a file…") { growFromFile() }
+            } label: { Label("Grow…", systemImage: "hammer") }
+                .menuStyle(.borderlessButton).fixedSize()
                 .disabled(!config.graftAvailable)
-                .help(config.graftAvailable ? "Build a sapling from a .graft seed" : "Install the graft CLI")
+                .help(config.graftAvailable ? "Build a sapling from one of your seeds" : "Install the graft CLI")
             Button { pulling = true } label: { Label("Pull…", systemImage: "arrow.down.circle") }
                 .disabled(!config.graftAvailable)
                 .help(config.graftAvailable ? "Pull an image from a registry" : "Install the graft CLI")
@@ -61,12 +77,23 @@ struct SaplingsView: View {
             empty
         } else {
             List {
-                ForEach(images, id: \.self) { name in
+                ForEach(images, id: \.name) { vm in
+                    let seed = config.seedRecipe(vm.name)
                     HStack(spacing: 12) {
-                        Image(systemName: "leaf").foregroundStyle(.green)
-                        Text(name).font(.body).lineLimit(1).truncationMode(.middle)
+                        Image(systemName: seed != nil ? "circle.hexagongrid.fill" : "leaf")
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(vm.name).font(.body).lineLimit(1).truncationMode(.middle)
+                            Text(provenance(vm, seed: seed))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
                         Spacer()
-                        Button(role: .destructive) { pendingRemove = name } label: { Image(systemName: "trash") }
+                        if seed != nil {
+                            Button("Edit seed") { editingSeed = EditingSeed(name: vm.name) }
+                                .help("Open the seed this was grown from")
+                        }
+                        Button(role: .destructive) { pendingRemove = vm.name } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
                             .help("Remove image")
                     }
@@ -79,6 +106,18 @@ struct SaplingsView: View {
             }
             .listStyle(.inset)
         }
+    }
+
+    /// One-line provenance: a matching library seed (→ grown from it, on what base), else
+    /// the registry/local origin from `tart list`, with size when known.
+    private func provenance(_ vm: TartVM, seed: ImageRecipe?) -> String {
+        if let seed {
+            let base = seed.from.isEmpty ? "—" : seed.from
+            return "grown from seed · base \(base)"
+        }
+        let origin = (vm.source ?? "").lowercased() == "oci" ? "pulled image" : "local image"
+        guard let size = vm.size, size > 0 else { return origin }
+        return "\(origin) · \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))"
     }
 
     private var empty: some View {
@@ -96,10 +135,18 @@ struct SaplingsView: View {
 
     private func reload() {
         loading = true
-        Task { images = await config.localImages(); loading = false }
+        seeds = config.seedNames()
+        Task { images = await config.saplings(); loading = false }
     }
 
-    private func grow() {
+    /// Grow one of the library seeds (terminal stream); it'll appear here after a Refresh.
+    private func growSeed(_ name: String) {
+        config.growSeed(name)
+        status = "Growing \(name) — watch the terminal, then Refresh."
+    }
+
+    /// Escape hatch: grow from a `.graft` file anywhere on disk (not in the library).
+    private func growFromFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = []
         panel.allowsMultipleSelection = false
@@ -107,6 +154,7 @@ struct SaplingsView: View {
         panel.message = "Choose a .graft seed (also YAML / JSON)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         config.growSapling(seedPath: url.path)
+        status = "Growing — watch the terminal, then Refresh."
     }
 
     private func remove(_ name: String) {

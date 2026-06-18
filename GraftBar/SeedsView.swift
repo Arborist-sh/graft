@@ -2,79 +2,209 @@ import SwiftUI
 import AppKit
 import GraftCore
 
-/// The Seeds section — build a `.graft` image recipe as a **builder** (start with name/from,
-/// "+ Add" only the components you want — Add toolchain → Python, add as many custom scripts
-/// or sims as you like) or edit the **Raw** YAML. The Form round-trips through `ImageRecipe`,
-/// so a form-save rewrites clean YAML (Raw is the lossless escape hatch). Render previews the
-/// compiled provisioning script; Grow builds the sapling.
+/// The Seeds section — a library of `.graft` image recipes kept in `~/.graft/seeds/`.
+/// Browse them, create / duplicate / grow / delete, and edit one in a modal. Editing
+/// is the `SeedEditorSheet` (Builder ↔ Raw). A seed's identity is its recipe `name`
+/// (the file is `<name>.graft`). See [[seed-registry-idea]] for where this is headed.
 struct SeedsView: View {
     @ObservedObject var config: ConfigStore
-    /// Persists the editor's content across section switches (the view itself is destroyed
-    /// when you navigate away, so its @State would reset — this holds the snapshot).
-    let store: SeedEditorModel
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
+
+    @State private var seeds: [String] = []
+    @State private var editing: EditingSeed?
+    @State private var pendingDelete: String?
+    @State private var status: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            content
+        }
+        .onAppear(perform: reload)
+        .sheet(item: $editing, onDismiss: reload) { target in
+            SeedEditorSheet(config: config, editing: target.name)
+        }
+        .confirmationDialog(
+            "Delete seed “\(pendingDelete ?? "")”?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let n = pendingDelete { config.removeSeed(n); reload() }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("Removes ~/.graft/seeds/\(pendingDelete ?? "").graft. Saplings already grown from it are untouched.")
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text(Lex.seeds(vocab)).font(.title2.weight(.semibold))
+            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+            Spacer()
+            Button { importSeed() } label: { Label("Import…", systemImage: "square.and.arrow.down") }
+            Button { editing = EditingSeed(name: nil) } label: { Label("New seed", systemImage: "plus") }
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if seeds.isEmpty {
+            VStack(spacing: 12) {
+                GraftMark(size: 44, color: Color(nsColor: .tertiaryLabelColor))
+                Text("No seeds yet").font(.headline)
+                Text("A seed is a .graft recipe that builds a golden image.\nCreate one, or import an existing .graft.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button { editing = EditingSeed(name: nil) } label: { Label("New seed", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        } else {
+            List {
+                ForEach(seeds, id: \.self, content: row)
+            }
+            .listStyle(.inset)
+        }
+    }
+
+    private func row(_ name: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "circle.hexagongrid").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.body.weight(.medium))
+                Text(summary(name)).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button("Edit") { editing = EditingSeed(name: name) }
+            Button("Duplicate") {
+                if let n = config.duplicateSeed(name) { reload(); status = "Duplicated → \(n)" }
+            }
+            Button("Grow") {
+                config.growSeed(name)
+                status = "Growing \(name) — watch the terminal; it'll appear in Saplings when done."
+            }
+            .disabled(!config.graftAvailable)
+            .help(config.graftAvailable ? "Build this seed into a sapling" : "graft CLI not found")
+            Button(role: .destructive) { pendingDelete = name } label: { Image(systemName: "trash") }
+                .buttonStyle(.borderless).help("Delete seed")
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// One-line "from IMAGE · N components" summary, parsed live from the seed.
+    private func summary(_ name: String) -> String {
+        guard let r = config.seedRecipe(name) else { return "unparseable .graft (open to fix in Raw)" }
+        let n = RecipeForm(from: r).active.count
+        let from = r.from.isEmpty ? "no base" : r.from
+        return "\(from)  ·  \(n) component\(n == 1 ? "" : "s")"
+    }
+
+    private func reload() { seeds = config.seedNames() }
+
+    private func importSeed() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = []; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.message = "Import a .graft seed into your library"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let name = config.importSeed(from: url) { reload(); status = "Imported → \(name)" }
+        else { status = "Couldn't import that file." }
+    }
+}
+
+/// `.sheet(item:)` wrapper — `name == nil` means a brand-new seed.
+struct EditingSeed: Identifiable { let id = UUID(); let name: String? }
+
+/// Edit one seed in a modal: a **Builder** (start with name/from, "+ Add" only the
+/// components you want) or the **Raw** YAML. Round-trips through `ImageRecipe`, so a
+/// form-save rewrites clean YAML (Raw is the lossless escape hatch). Saves into the
+/// library keyed by the recipe `name`; changing the name renames the file.
+struct SeedEditorSheet: View {
+    @ObservedObject var config: ConfigStore
+    /// The seed being edited; nil for a new one.
+    let editing: String?
+    @Environment(\.dismiss) private var dismiss
 
     enum Mode: String { case form, raw }
 
     @State private var mode: Mode = .form
     @State private var text = ""
     @State private var form = RecipeForm()
-    @State private var path: String?
+    /// The name we loaded under — to rename the file if the recipe name changes on save.
+    @State private var originalName: String?
     @State private var dirty = false
-    @State private var rendering = false
-    @State private var renderOutput = ""
     @State private var status: String?
     @State private var images: [String] = []
+
+    @State private var rendering = false
+    @State private var renderOutput = ""
     @State private var inspecting = false
     @State private var showInspect = false
     @State private var inspectOutput = ""
+    @State private var confirmDiscard = false
+    @State private var savingAs = false
+    @State private var saveAsName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             Group { if mode == .form { formEditor } else { rawEditor } }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            footer
         }
+        .frame(width: 620, height: 640)
         .task { images = await config.localImages() }
-        .onAppear { restore() }
-        .onDisappear { snapshot() }
+        .onAppear(perform: load)
         .sheet(isPresented: $rendering) { RenderSheet(script: renderOutput) }
         .sheet(isPresented: $showInspect) { InspectSheet(image: form.from, report: inspectOutput) }
+        .confirmationDialog("Discard unsaved changes?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { dismiss() }
+            Button("Keep editing", role: .cancel) {}
+        }
+        .alert("Save as", isPresented: $savingAs) {
+            TextField("New seed name", text: $saveAsName)
+            Button("Save") { saveAs() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saves a copy under a new name.")
+        }
     }
 
-    /// Restore the editor from the persisted snapshot when returning to this section.
-    private func restore() {
-        guard store.loaded else { return }
-        mode = store.mode; text = store.text; form = store.form
-        path = store.path; dirty = store.dirty; status = store.status
-    }
-
-    /// Snapshot the editor when leaving the section, so coming back resumes where you were.
-    private func snapshot() {
-        store.mode = mode; store.text = text; store.form = form
-        store.path = path; store.dirty = dirty; store.status = status
-        store.loaded = true
-    }
-
-    // MARK: Header
+    // MARK: Header / footer
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text(Lex.seeds(vocab)).font(.title2.weight(.semibold))
+            Text(editing == nil ? "New seed" : (originalName ?? editing!))
+                .font(.headline)
             Picker("", selection: Binding(get: { mode }, set: { switchMode(to: $0) })) {
                 Text("Builder").tag(Mode.form); Text("Raw").tag(Mode.raw)
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 150)
-            if let path { Text((path as NSString).lastPathComponent + (dirty ? " •" : "")).font(.caption).foregroundStyle(.secondary) }
-            else if dirty { Text("untitled •").font(.caption).foregroundStyle(.secondary) }
+            if dirty { Text("•").foregroundStyle(.secondary) }
             if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
             Spacer()
-            Button { open() } label: { Label("Open…", systemImage: "folder") }
-            Button { newDoc() } label: { Label("New", systemImage: "doc.badge.plus") }
-            Button { save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
-            Button { render() } label: { Label("Render", systemImage: "eye") }.disabled(!config.graftAvailable)
-            Button { grow() } label: { Label("Grow", systemImage: "hammer") }
-                .buttonStyle(.borderedProminent).disabled(!config.graftAvailable)
+            Button { render() } label: { Label("Render", systemImage: "eye") }
+                .disabled(!config.graftAvailable)
+        }
+        .padding(16)
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("Save as…") { saveAsName = ""; savingAs = true }
+                .disabled(currentName() == nil)
+            Spacer()
+            Button("Cancel") { if dirty { confirmDiscard = true } else { dismiss() } }
+            Button("Save") { if save() { dismiss() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(currentName() == nil)
         }
         .padding(16)
     }
@@ -200,7 +330,6 @@ struct SeedsView: View {
     }
 
     /// Curated common versions for the dropdown — still freely typeable for anything else.
-    /// (Static, not live: the real catalogs live in the guest's xcodes/fnm/rbenv/pyenv.)
     static func versions(_ comp: Comp) -> [String] {
         switch comp {
         case .xcode: ["16.2", "16.1", "16.0", "15.4", "15.3"]
@@ -275,36 +404,50 @@ struct SeedsView: View {
 
     private func canonicalText() -> String { if mode == .form { syncFormToText() }; return text }
 
-    // MARK: Actions
-
-    private func open() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = []; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "Open a .graft seed (also YAML / JSON)"
-        guard panel.runModal() == .OK, let url = panel.url, let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
-        text = contents; path = url.path; dirty = false; status = nil
-        if mode == .form, !loadFormFromText() { mode = .raw; status = "Opened in Raw — the builder couldn't parse this YAML." }
+    /// The seed's identity (recipe name) from current state, or nil if unset / unparseable.
+    private func currentName() -> String? {
+        let raw: String
+        if mode == .form { raw = form.name }
+        else { guard let r = try? ImageRecipe.parse(text) else { return nil }; raw = r.name }
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func newDoc() {
-        text = ""; path = nil; dirty = false; status = nil
-        form = RecipeForm()
-        if mode == .raw { text = "name: my-image\nfrom: ghcr.io/cirruslabs/macos-sequoia-xcode:latest\n" }
+    // MARK: Load / save
+
+    private func load() {
+        guard let editing else { form = RecipeForm(); mode = .form; return }
+        originalName = editing
+        text = config.readSeed(editing)
+        if loadFormFromText() { mode = .form }
+        else { mode = .raw; status = "Opened in Raw — the builder couldn't parse this YAML." }
     }
 
     @discardableResult
     private func save() -> Bool {
-        let body = canonicalText()
-        if path == nil {
-            let panel = NSSavePanel()
-            panel.nameFieldStringValue = "image.graft"; panel.message = "Save the .graft seed"
-            guard panel.runModal() == .OK, let url = panel.url else { return false }
-            path = url.path
+        guard let name = currentName() else { status = "Give the seed a name first."; return false }
+        if name != originalName, config.seedExists(name) {
+            status = "A seed named “\(name)” already exists."; return false
         }
-        guard let p = path else { return false }
-        do { try body.write(toFile: p, atomically: true, encoding: .utf8); dirty = false; status = "Saved."; return true }
-        catch { status = "Couldn't save: \(error.localizedDescription)"; return false }
+        guard config.saveSeed(canonicalText(), as: name, renamingFrom: originalName) else {
+            status = "Couldn't save."; return false
+        }
+        originalName = name; dirty = false; status = "Saved."
+        return true
     }
+
+    /// Save a copy under a new name, leaving the original untouched, and switch to it.
+    private func saveAs() {
+        let name = saveAsName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        guard !config.seedExists(name) else { status = "A seed named “\(name)” already exists."; return }
+        if mode == .form { form.name = name } // keep identity = recipe name
+        else if var r = try? ImageRecipe.parse(text) { r.name = name; text = (try? r.yamlString()) ?? text }
+        guard config.saveSeed(canonicalText(), as: name) else { status = "Couldn't save."; return }
+        originalName = name; dirty = false; status = "Saved as \(name)."
+    }
+
+    // MARK: Render / inspect
 
     private func render() {
         let body = canonicalText()
@@ -315,12 +458,6 @@ struct SeedsView: View {
             try? FileManager.default.removeItem(atPath: tmp)
             rendering = true
         }
-    }
-
-    private func grow() {
-        guard save(), let p = path else { return }
-        config.growSapling(seedPath: p)
-        status = "Growing — watch the terminal; it'll appear in Saplings when done."
     }
 
     private func inspect() {
@@ -480,18 +617,6 @@ struct RepoEditor: View {
         }
         .padding(.vertical, 2)
     }
-}
-
-/// Holds the Seeds editor's content between visits. Owned by RootView (@StateObject) so it
-/// outlives the view, which is recreated each time you navigate back to the section.
-final class SeedEditorModel: ObservableObject {
-    var loaded = false
-    var mode: SeedsView.Mode = .form
-    var text = ""
-    var form = RecipeForm()
-    var path: String?
-    var dirty = false
-    var status: String?
 }
 
 /// Read-only preview of the provisioning script a seed compiles to.
