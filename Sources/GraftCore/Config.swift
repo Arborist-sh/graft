@@ -252,10 +252,25 @@ public struct MonitorConfig: Codable, Sendable, Equatable {
 /// vs system) is no longer here — it's recorded per-secret on `GitHubConfig.scope` /
 /// `OrchardConfig.scope`, so each key's location travels with the App/account it belongs to.
 public struct SecretsConfig: Codable, Sendable {
+    /// `"keychain"` (default) or `"file"`. With `"file"`, App keys are read from plain
+    /// `<path>/<app-id>.pem` files instead of the keychain — the headless-host escape hatch.
     public var store: String
+    /// Directory of `<app-id>.pem` files when `store == "file"`. Defaults to `~/.graft/keys`.
+    public var path: String?
 
-    public init(store: String = "keychain") {
+    public init(store: String = "keychain", path: String? = nil) {
         self.store = store
+        self.path = path
+    }
+
+    public var usesFileStore: Bool { store.lowercased() == "file" }
+
+    /// The secret store this config selects for reading an App key at `scope`:
+    /// `"file"` → `<path>/<app-id>.pem` on disk; otherwise the keychain at `scope`.
+    public func makeStore(scope: KeychainScope) -> any SecretStore {
+        usesFileStore
+            ? FileSecretStore(directory: path ?? FileSecretStore.defaultDirectory)
+            : KeychainSecretStore(scope: scope)
     }
 }
 
@@ -308,6 +323,14 @@ public struct GraftConfig: Codable, Sendable {
     /// Falls back to login if the App isn't referenced (shouldn't happen for a valid run).
     public func scope(forAppID appID: Int) -> KeychainScope {
         distinctGitHubConfigs().first { $0.appId == appID }?.scope ?? .login
+    }
+
+    /// The secret store for reading App private keys, honoring `secrets.store`:
+    /// `"file"` reads `<secrets.path>/<app-id>.pem` from disk (headless-host escape hatch);
+    /// otherwise the macOS keychain at the per-App `scope`. Use this everywhere an App key is
+    /// read at runtime (tend / check / repo-token / runners) so the file store takes effect.
+    public func secretStore(scope: KeychainScope) -> any SecretStore {
+        secrets?.makeStore(scope: scope) ?? KeychainSecretStore(scope: scope)
     }
 }
 

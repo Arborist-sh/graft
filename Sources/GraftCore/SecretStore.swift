@@ -289,14 +289,23 @@ public struct KeychainSecretStore: SecretStore {
         }
     }
 
-    /// Open the keychain file this scope targets (system or an explicit path), or nil for
-    /// login (which uses the default search list).
+    /// The single keychain this scope's operations must be confined to. Confining matters even
+    /// for `login`: without it, SecItem* uses the default search list (login + System + …), so a
+    /// login-scope delete/read collides with a same-service item in the System keychain — and a
+    /// non-root process can't write System, surfacing as `errSecWrPerm` ("Write permissions
+    /// error") on the import's idempotent delete. Each scope confines to exactly its own keychain.
     private func openKeychainIfNeeded() -> SecKeychain? {
-        guard let path = scope.keychainFilePath else { return nil }
         var keychain: SecKeychain?
-        // Deprecated API, intentional: the only way to address a specific keychain file.
-        let status = SecKeychainOpen(path, &keychain)
-        return status == errSecSuccess ? keychain : nil
+        switch scope {
+        case .login:
+            // The user's default (login) keychain — where login-scope writes already land,
+            // so reads/deletes confine to the same place instead of spanning every keychain.
+            return SecKeychainCopyDefault(&keychain) == errSecSuccess ? keychain : nil
+        case .system, .file:
+            guard let path = scope.keychainFilePath else { return nil }
+            // Deprecated API, intentional: the only way to address a specific keychain file.
+            return SecKeychainOpen(path, &keychain) == errSecSuccess ? keychain : nil
+        }
     }
 
     private func keychainError(_ action: String, _ status: OSStatus) -> GraftError {
