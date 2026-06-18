@@ -59,8 +59,10 @@ struct SaplingsView: View {
                 Image(systemName: "network").foregroundStyle(.secondary)
                 TextField("nat | bridged:en0", text: $buildNetwork)
                     .textFieldStyle(.roundedBorder).frame(width: 130)
+                Image(systemName: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+                    .help("Build network for grows on THIS machine — passed as `--network`.\n\n• Leave empty for the default (NAT).\n• Use bridged:<iface> (e.g. bridged:en8) when NAT is blocked, e.g. behind a corporate VPN / IP allow list, so the build VM rides your network.\n\nHost-specific: it's saved in app prefs, never baked into the shareable seed.")
             }
-            .help("Build-VM network for grows on THIS machine (e.g. bridged:en0 behind a corporate IP allow list). Host-specific — applied as `--network`, never saved into the seed.")
             Menu {
                 if seeds.isEmpty {
                     Text("No seeds in your library yet")
