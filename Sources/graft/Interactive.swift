@@ -234,10 +234,10 @@ func withTimeout<T: Sendable>(
 }
 
 /// Pick a Tart image for a pool: choose from what's already on the machine
-/// (local clones + pulled OCI images via `tart list`), or type any registry ref.
-/// No baked-in default — the menu reflects reality.
+/// (local clones + pulled OCI images via `tart list`), search a registry for a base to
+/// pull, or type any registry ref. No baked-in default — the menu reflects reality.
 enum ImagePicker {
-    static func resolve() async -> String {
+    static func resolve(os: GuestOS = .macOS) async -> String {
         let prompt = "Tart image (e.g. ghcr.io/cirruslabs/macos-tahoe-base:latest)"
         let available = (try? await Tart.list()) ?? []
 
@@ -247,7 +247,6 @@ enum ImagePicker {
             !$0.contains("@sha256:") && !$0.hasPrefix("graft-dev-") && !$0.hasPrefix("graft-imgbuild-")
         }
         let unique = Array(Set(names)).sorted()
-        guard !unique.isEmpty else { return Prompt.required(prompt) }
 
         let sourceByName = Dictionary(
             available.map { ($0.name, $0.source ?? "") },
@@ -257,10 +256,43 @@ enum ImagePicker {
             let src = (sourceByName[name] ?? "").lowercased()
             return src.isEmpty ? name : "\(name)  (\(src))"
         }
+        let searchIndex = options.count
+        options.append("search a registry…")
         options.append("enter a custom image…")
 
         let choice = Prompt.choose("Which Tart image?", options)
-        return choice < unique.count ? unique[choice] : Prompt.required(prompt)
+        if choice < unique.count { return unique[choice] }
+        if choice == searchIndex { return await searchRegistry(os: os) ?? Prompt.required(prompt) }
+        return Prompt.required(prompt)
+    }
+
+    /// Browse a registry: pick a curated base (or type a repository), list its tags over
+    /// the anonymous pull-token flow, and return `repo:tag`. The pull itself happens lazily
+    /// when the pool first clones the image (`Tart.ensureAvailable`), same as a typed ref.
+    /// Falls back to a manual tag prompt if the registry can't be reached.
+    private static func searchRegistry(os: GuestOS) async -> String? {
+        let catalog = RegistryCatalog.images(for: os)
+        var repoOptions = catalog.map { "\($0.title)  \(ANSI.dim($0.repository))" }
+        repoOptions.append("enter a repository…")
+
+        let pick = Prompt.choose("Which registry image?", repoOptions)
+        let repo = pick < catalog.count
+            ? catalog[pick].repository
+            : Prompt.required("Repository (e.g. ghcr.io/cirruslabs/macos-tahoe-base)")
+
+        printErr(ANSI.dim("  fetching tags for \(repo)…"))
+        let tags: [String]
+        do {
+            tags = try await RegistryClient().tags(forRepository: repo)
+        } catch {
+            printErr(ANSI.dim("  ⚠ couldn't list tags (\(error)) — enter one manually."))
+            return "\(repo):\(Prompt.line("Tag", default: "latest"))"
+        }
+        guard !tags.isEmpty else {
+            return "\(repo):\(Prompt.line("Tag", default: "latest"))"
+        }
+        let tagIndex = Prompt.choose("Which tag?", tags)
+        return "\(repo):\(tags[tagIndex])"
     }
 }
 
@@ -273,7 +305,7 @@ enum Wizard {
         printErr("\n— New pool —")
         let name = Prompt.line("Pool name", default: "mac")
         let os: GuestOS = Prompt.choose("Guest OS?", ["macOS", "Linux"]) == 0 ? .macOS : .linux
-        let image = await ImagePicker.resolve()
+        let image = await ImagePicker.resolve(os: os)
         let count = Prompt.int("How many runners?", default: os == .macOS ? 2 : 4)
         let labelsRaw = Prompt.line("Labels (comma-separated; blank → self-hosted,\(os.rawValue),\(name))", default: "")
         let labels = labelsRaw.isEmpty

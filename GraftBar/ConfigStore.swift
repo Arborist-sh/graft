@@ -87,6 +87,15 @@ final class ConfigStore: ObservableObject {
         }.value
     }
 
+    /// Tags available for a registry repository (e.g. `ghcr.io/cirruslabs/macos-tahoe-xcode`),
+    /// over the anonymous pull-token flow. Powers the "Browse registry" picker. Returns the
+    /// tag list and a nil error on success, or an empty list and a short message to show
+    /// inline — never throws into the UI.
+    func registryTags(for repository: String) async -> (tags: [String], error: String?) {
+        do { return (try await RegistryClient().tags(forRepository: repository), nil) }
+        catch { return ([], "\(error)") }
+    }
+
     /// GitHub App IDs we hold a private key for, in the login Keychain — the natural set
     /// of App IDs to offer in the profile editor. Attribute-only read, so no access prompt.
     func storedAppIDs() -> [Int] {

@@ -171,6 +171,7 @@ struct PoolEditorSheet: View {
     let onSave: (PoolDraft) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var images: [String] = []
+    @State private var browsingRegistry = false
 
     private var valid: Bool {
         !draft.name.trimmingCharacters(in: .whitespaces).isEmpty &&
@@ -197,6 +198,9 @@ struct PoolEditorSheet: View {
                             .fixedSize()
                             .help("Pick a local image")
                         }
+                        Button { browsingRegistry = true } label: { Image(systemName: "magnifyingglass") }
+                            .buttonStyle(.borderless)
+                            .help("Search a registry for an image to pull")
                     }
                 }
                 Picker("OS", selection: $draft.os) {
@@ -221,5 +225,11 @@ struct PoolEditorSheet: View {
         }
         .frame(width: 440, height: 480)
         .task { images = await config.localImages() }
+        .sheet(isPresented: $browsingRegistry) {
+            RegistryBrowserSheet(os: draft.os, localImages: Set(images), config: config) { ref, pullNow in
+                draft.image = ref
+                if pullNow { config.pullSapling(ref: ref) }
+            }
+        }
     }
 }
