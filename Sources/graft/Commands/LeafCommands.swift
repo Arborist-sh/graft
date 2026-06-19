@@ -25,7 +25,7 @@ extension Leaf {
 
         func run() async throws {
             let provider = LocalTartProvider()
-            try await Tart.ensureAvailable(image)        // pull the image if it isn't cached
+            try await withInterruptHandling { try await Tart.ensureAvailable(image) }   // pull if not cached (Ctrl-C cancels it)
             printErr("cloning \(image) and booting…")
             let vm = try await provider.acquire(image: image, os: os, mounts: [])
             print("\(vm.name)\t\(vm.ip)")

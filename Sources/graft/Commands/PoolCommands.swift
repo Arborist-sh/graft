@@ -22,9 +22,6 @@ extension Pool {
         @Option(name: .long, help: "Profile to edit (default: active). Created if missing.")
         var profile: String?
 
-        @Flag(help: "Use the system keychain for key import (headless hosts).")
-        var system = false
-
         func run() async throws {
             let profileName = profile ?? Profiles.activeName() ?? "default"
             var config = Profiles.exists(profileName)

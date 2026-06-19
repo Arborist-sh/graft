@@ -52,28 +52,34 @@ struct Check: AsyncParsableCommand {
     @Option(name: .long, help: "With --config/--profile, only check this pool.")
     var pool: String?
 
-    @Flag(help: "Use the system keychain instead of login.")
-    var system = false
-
     @Flag(help: "Stop after minting a token — don't create/delete a probe runner.")
     var noProbe = false
 
     func run() async throws {
         let targets: [GitHubConfig]
-        let scope: KeychainScope
+        var secretsCfg: SecretsConfig?   // profile mode → honor secrets.store (file vs keychain)
 
         if appId != nil || target != nil {
             // Ad-hoc mode: an explicit App/target was given — check that one (prompt for
-            // whichever half is missing). For one-off checks outside a profile.
-            scope = system ? .system : .login
-            let resolvedAppID = try appId ?? Self.pickAppID(scope: scope)
+            // whichever half is missing). For one-off checks outside a profile. There's no
+            // recorded scope, so we *find* the key — scan both keychains for where it lives.
+            let resolvedAppID: Int
+            let scope: KeychainScope
+            if let appId {
+                resolvedAppID = appId
+                scope = Self.locateKey(forAppID: appId)
+            } else {
+                (resolvedAppID, scope) = try Self.pickAppID()
+            }
             let resolvedTarget = try target ?? Self.promptTarget()
-            targets = [GitHubConfig(appId: resolvedAppID, target: resolvedTarget, runnerGroupId: runnerGroupId)]
+            targets = [GitHubConfig(appId: resolvedAppID, target: resolvedTarget, runnerGroupId: runnerGroupId, scope: scope)]
         } else {
             // Profile mode (default): check the GitHub config every pool registers against
-            // (resolved: pool override, else the profile default) — nothing to retype.
+            // (resolved: pool override, else the profile default) — nothing to retype. Each
+            // config carries its own keychain scope.
             let path = GraftConfig.resolvePath(explicit: config, profile: profile)
             let cfg = try GraftConfig.load(from: path)
+            secretsCfg = cfg.secrets
             let filtered = pool.map { name in cfg.pools.filter { $0.name == name } } ?? cfg.pools
             guard !filtered.isEmpty else {
                 throw GraftError(pool.map { "no pool named '\($0)'" }
@@ -85,24 +91,35 @@ struct Check: AsyncParsableCommand {
             guard !targets.isEmpty else {
                 throw GraftError("profile has no GitHub config — set a top-level `github`, or pass --app-id/--target")
             }
-            scope = system ? .system : (KeychainScope(rawValue: cfg.secrets?.scope ?? "login") ?? .login)
         }
 
-        let secrets = KeychainSecretStore(scope: scope)
+        let allPassed = await Self.verify(targets: targets, probe: !noProbe, secrets: secretsCfg)
+        if !allPassed { throw ExitCode.failure }
+        print("\nall checks passed ✓  — GitHub App auth is wired correctly")
+    }
 
+    /// Run the GitHub App auth chain against the real API for each config: sign an App JWT
+    /// → discover the installation → mint an installation token → (optionally) create and
+    /// immediately delete a probe JIT runner. Each App's key is read from its own recorded
+    /// keychain scope. Prints progress; returns true iff every step of every target passed.
+    /// Shared by `arborist check` and the `init` wizard's verify step.
+    @discardableResult
+    static func verify(targets: [GitHubConfig], probe: Bool = true, secrets: SecretsConfig? = nil) async -> Bool {
         func ok(_ message: String) { print("  ✓ \(message)") }
         func fail(_ step: String, _ error: Error) { printErr("  ✗ \(step): \(error)") }
 
         var failed = false
         for gh in targets {
+            let store = secrets?.makeStore(scope: gh.scope) ?? KeychainSecretStore(scope: gh.scope)
+            let client = GitHubAppClient(appID: gh.appId, secrets: store)
+            let source = secrets?.usesFileStore == true ? "file store" : "\(gh.scope.rawValue) keychain"
             print("── app \(gh.appId), \(gh.target) ──")
-            let client = GitHubAppClient(appID: gh.appId, secrets: secrets)
 
             let parsedTarget: GitHubTarget
             do { parsedTarget = try gh.parsedTarget() }
             catch { fail("parse target", error); failed = true; continue }
 
-            do { _ = try await client.makeAppJWT(); ok("read key from \(scope.rawValue) keychain + signed App JWT") }
+            do { _ = try await client.makeAppJWT(); ok("read key from \(source) + signed App JWT") }
             catch { fail("sign App JWT", error); failed = true; continue }
 
             do {
@@ -113,7 +130,7 @@ struct Check: AsyncParsableCommand {
             do { _ = try await client.installationAccessToken(for: parsedTarget); ok("minted installation access token") }
             catch { fail("mint installation token", error); failed = true; continue }
 
-            if noProbe { continue }
+            if !probe { continue }
 
             let probeName = "graft-doctor-" + UUID().uuidString.prefix(8).lowercased()
             do {
@@ -128,31 +145,42 @@ struct Check: AsyncParsableCommand {
                 }
             } catch { fail("generate JIT config", error); failed = true }
         }
-
-        if failed { throw ExitCode.failure }
-        print("\nall checks passed ✓  — GitHub App auth is wired correctly")
+        return !failed
     }
 
     // MARK: Interactive pickers
 
-    /// Choose an App ID from the keys stored in the keychain. Auto-selects when there's
-    /// only one. Listing reads attributes only — no Keychain prompt here.
-    private static func pickAppID(scope: KeychainScope) throws -> Int {
-        let ids = try KeychainSecretStore(scope: scope).storedAppIDs()
-        guard !ids.isEmpty else {
-            throw GraftError("no App keys in the \(scope.rawValue) keychain — run `graft secrets import --app-id <ID> --pem <path>`")
+    /// Find which keychain holds an App's key — scan login then system (attribute-only, so
+    /// no Keychain unlock prompt). Defaults to login if neither has it; the verify run then
+    /// surfaces the missing key with a clear error.
+    private static func locateKey(forAppID appID: Int) -> KeychainScope {
+        for scope in [KeychainScope.login, .system] {
+            if ((try? KeychainSecretStore(scope: scope).storedAppIDs()) ?? []).contains(appID) { return scope }
         }
-        if ids.count == 1 {
-            printErr("using app \(ids[0]) (only key in the \(scope.rawValue) keychain)")
-            return ids[0]
+        return .login
+    }
+
+    /// Choose an App from the keys stored across both keychains, returning the App ID and
+    /// the keychain its key lives in. Auto-selects when there's only one. Listing reads
+    /// attributes only — no Keychain prompt here.
+    private static func pickAppID() throws -> (Int, KeychainScope) {
+        let entries: [(id: Int, scope: KeychainScope)] =
+            (((try? KeychainSecretStore(scope: .login).storedApps()) ?? []).map { ($0.id, KeychainScope.login) })
+            + (((try? KeychainSecretStore(scope: .system).storedApps()) ?? []).map { ($0.id, KeychainScope.system) })
+        guard !entries.isEmpty else {
+            throw GraftError("no App keys in your keychains — run `graft secrets import --app-id <ID> --pem <path>`")
         }
-        printErr("App keys in the \(scope.rawValue) keychain:")
-        for (index, id) in ids.enumerated() { printErr("  [\(index + 1)] \(id)") }
+        if entries.count == 1 {
+            printErr("using app \(entries[0].id) (only key, in the \(entries[0].scope.rawValue) keychain)")
+            return (entries[0].id, entries[0].scope)
+        }
+        printErr("App keys found:")
+        for (index, e) in entries.enumerated() { printErr("  [\(index + 1)] app \(e.id) — \(e.scope.rawValue) keychain") }
         while true {
-            FileHandle.standardError.write(Data("pick one [1-\(ids.count)]: ".utf8))
+            FileHandle.standardError.write(Data("pick one [1-\(entries.count)]: ".utf8))
             guard let line = readLine() else { throw GraftError("no selection made") }
-            if let choice = Int(line.trimmingCharacters(in: .whitespaces)), (1...ids.count).contains(choice) {
-                return ids[choice - 1]
+            if let choice = Int(line.trimmingCharacters(in: .whitespaces)), (1...entries.count).contains(choice) {
+                return (entries[choice - 1].id, entries[choice - 1].scope)
             }
             printErr("  not a valid choice")
         }

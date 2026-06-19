@@ -50,9 +50,13 @@ public struct GitHubConfig: Codable, Sendable, Equatable {
     public var target: String
     /// Required for org JIT runners; defaults to the default group (1).
     public var runnerGroupId: Int
+    /// Which keychain holds this App's private key — recorded alongside the App it
+    /// belongs to, so the App ID and the keychain its key lives in always travel
+    /// together (no separate profile-wide scope toggle to drift out of sync).
+    public var scope: KeychainScope
 
     enum CodingKeys: String, CodingKey {
-        case appId, target, runnerGroupId
+        case appId, target, runnerGroupId, scope
     }
 
     public init(from decoder: Decoder) throws {
@@ -60,12 +64,14 @@ public struct GitHubConfig: Codable, Sendable, Equatable {
         appId = try c.decode(Int.self, forKey: .appId)
         target = try c.decode(String.self, forKey: .target)
         runnerGroupId = try c.decodeIfPresent(Int.self, forKey: .runnerGroupId) ?? 1
+        scope = try c.decodeIfPresent(KeychainScope.self, forKey: .scope) ?? .login
     }
 
-    public init(appId: Int, target: String, runnerGroupId: Int = 1) {
+    public init(appId: Int, target: String, runnerGroupId: Int = 1, scope: KeychainScope = .login) {
         self.appId = appId
         self.target = target
         self.runnerGroupId = runnerGroupId
+        self.scope = scope
     }
 
     public func parsedTarget() throws -> GitHubTarget { try GitHubTarget(parsing: target) }
@@ -132,12 +138,29 @@ public struct OrchardConfig: Codable, Sendable, Equatable {
     /// Cluster-wide ceiling graft fills toward. The controller does the real scheduling
     /// (incl. Apple's per-host 2-macOS-VM limit); this only bounds graft's ask. Default 100.
     public var maxVMs: Int?
+    /// Which keychain holds the service-account token (resolved when `token` is nil).
+    /// Recorded with the account it belongs to — same per-secret rule as `GitHubConfig`.
+    public var scope: KeychainScope
 
-    public init(controllerURL: URL, serviceAccount: String, token: String? = nil, maxVMs: Int? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case controllerURL, serviceAccount, token, maxVMs, scope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        controllerURL = try c.decode(URL.self, forKey: .controllerURL)
+        serviceAccount = try c.decode(String.self, forKey: .serviceAccount)
+        token = try c.decodeIfPresent(String.self, forKey: .token)
+        maxVMs = try c.decodeIfPresent(Int.self, forKey: .maxVMs)
+        scope = try c.decodeIfPresent(KeychainScope.self, forKey: .scope) ?? .login
+    }
+
+    public init(controllerURL: URL, serviceAccount: String, token: String? = nil, maxVMs: Int? = nil, scope: KeychainScope = .login) {
         self.controllerURL = controllerURL
         self.serviceAccount = serviceAccount
         self.token = token
         self.maxVMs = maxVMs
+        self.scope = scope
     }
 }
 
@@ -225,15 +248,29 @@ public struct MonitorConfig: Codable, Sendable, Equatable {
     }
 }
 
-/// Where the GitHub App PEM lives. Keychain only — `scope` picks login (interactive
-/// `graft run`) vs. system (`--daemon`, headless, root-accessible).
+/// Which secret backend graft uses. Keychain only today. The keychain *scope* (login
+/// vs system) is no longer here — it's recorded per-secret on `GitHubConfig.scope` /
+/// `OrchardConfig.scope`, so each key's location travels with the App/account it belongs to.
 public struct SecretsConfig: Codable, Sendable {
+    /// `"keychain"` (default) or `"file"`. With `"file"`, App keys are read from plain
+    /// `<path>/<app-id>.pem` files instead of the keychain — the headless-host escape hatch.
     public var store: String
-    public var scope: String?
+    /// Directory of `<app-id>.pem` files when `store == "file"`. Defaults to `~/.graft/keys`.
+    public var path: String?
 
-    public init(store: String = "keychain", scope: String? = nil) {
+    public init(store: String = "keychain", path: String? = nil) {
         self.store = store
-        self.scope = scope
+        self.path = path
+    }
+
+    public var usesFileStore: Bool { store.lowercased() == "file" }
+
+    /// The secret store this config selects for reading an App key at `scope`:
+    /// `"file"` → `<path>/<app-id>.pem` on disk; otherwise the keychain at `scope`.
+    public func makeStore(scope: KeychainScope) -> any SecretStore {
+        usesFileStore
+            ? FileSecretStore(directory: path ?? FileSecretStore.defaultDirectory)
+            : KeychainSecretStore(scope: scope)
     }
 }
 
@@ -270,6 +307,31 @@ public struct GraftConfig: Codable, Sendable {
 
     /// The effective GitHub config for a pool: its own override, else the profile default.
     public func gitHub(for pool: PoolConfig) -> GitHubConfig? { pool.github ?? github }
+
+    /// Every distinct GitHub config this profile registers against (profile default +
+    /// any per-pool overrides), de-duplicated by App ID + target.
+    public func distinctGitHubConfigs() -> [GitHubConfig] {
+        var seen = Set<String>()
+        var out: [GitHubConfig] = []
+        for gh in ([github].compactMap { $0 } + pools.compactMap { $0.github }) {
+            if seen.insert("\(gh.appId)|\(gh.target)").inserted { out.append(gh) }
+        }
+        return out
+    }
+
+    /// Keychain scope for an App's key, taken from the first config that references it.
+    /// Falls back to login if the App isn't referenced (shouldn't happen for a valid run).
+    public func scope(forAppID appID: Int) -> KeychainScope {
+        distinctGitHubConfigs().first { $0.appId == appID }?.scope ?? .login
+    }
+
+    /// The secret store for reading App private keys, honoring `secrets.store`:
+    /// `"file"` reads `<secrets.path>/<app-id>.pem` from disk (headless-host escape hatch);
+    /// otherwise the macOS keychain at the per-App `scope`. Use this everywhere an App key is
+    /// read at runtime (tend / check / repo-token / runners) so the file store takes effect.
+    public func secretStore(scope: KeychainScope) -> any SecretStore {
+        secrets?.makeStore(scope: scope) ?? KeychainSecretStore(scope: scope)
+    }
 }
 
 extension GraftConfig {
@@ -360,7 +422,7 @@ extension GraftConfig {
         """
         {
           "provider": { "type": "tart" },
-          "github": { "appId": 12345, "target": "org:my-org" },
+          "github": { "appId": 12345, "target": "org:my-org", "scope": "login" },
           "pools": [
             {
               "name": "macos-release",
@@ -370,7 +432,7 @@ extension GraftConfig {
               "labels": ["self-hosted", "macos", "release"]
             }
           ],
-          "secrets": { "store": "keychain", "scope": "login" }
+          "secrets": { "store": "keychain" }
         }
         """
     }

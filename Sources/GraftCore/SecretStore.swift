@@ -9,14 +9,55 @@ public protocol SecretStore: Sendable {
 }
 
 /// Which macOS keychain backs the store.
-public enum KeychainScope: String, Sendable, CaseIterable {
-    /// The user's login keychain — unlocked by the GUI session. For interactive
-    /// `graft run`.
+/// Which keychain a secret lives in. `login` is the user's default keychain (unlocked by
+/// the GUI session); `system` is the well-known `/Library/Keychains/System.keychain`
+/// (root-accessible, unlocked at boot — reachable by a headless `--daemon` with no login
+/// session; writing needs sudo); `file` is any other keychain by absolute path. Encodes as
+/// a plain string in config: `"login"`, `"system"`, or the path.
+public enum KeychainScope: Codable, Sendable, Equatable, CustomStringConvertible {
     case login
-    /// The system keychain (`/Library/Keychains/System.keychain`) — root-accessible
-    /// and unlocked at boot, so a headless `graft run --daemon` can reach it with no
-    /// login session. Writing requires sudo.
     case system
+    case file(String)
+
+    /// The well-known macOS system keychain path.
+    public static let systemPath = "/Library/Keychains/System.keychain"
+
+    /// The keychain file to open, or nil for the default (login) search list.
+    public var keychainFilePath: String? {
+        switch self {
+        case .login: return nil
+        case .system: return Self.systemPath
+        case .file(let path): return path
+        }
+    }
+
+    /// Short string form for config + messages: "login", "system", or the path.
+    public var rawValue: String {
+        switch self {
+        case .login: return "login"
+        case .system: return "system"
+        case .file(let path): return path
+        }
+    }
+    public var description: String { rawValue }
+
+    /// Parse the config/CLI string form. The system keychain path normalizes to `.system`
+    /// so it has one canonical representation however it was spelled.
+    public init(parsing string: String) {
+        switch string {
+        case "login": self = .login
+        case "system", Self.systemPath: self = .system
+        default: self = .file(string)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(parsing: try decoder.singleValueContainer().decode(String.self))
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// `SecretStore` backed by the macOS Keychain. The PEM is stored as a generic-
@@ -237,30 +278,41 @@ public struct KeychainSecretStore: SecretStore {
     // to address a specific keychain file on macOS). Login uses the default list.
 
     private func applySearchScope(to query: inout [String: Any]) {
-        if let keychain = systemKeychainIfNeeded() {
+        if let keychain = openKeychainIfNeeded() {
             query[kSecMatchSearchList as String] = [keychain]
         }
     }
 
     private func applyWriteScope(to attributes: inout [String: Any]) {
-        if let keychain = systemKeychainIfNeeded() {
+        if let keychain = openKeychainIfNeeded() {
             attributes[kSecUseKeychain as String] = keychain
         }
     }
 
-    private func systemKeychainIfNeeded() -> SecKeychain? {
-        guard scope == .system else { return nil }
+    /// The single keychain this scope's operations must be confined to. Confining matters even
+    /// for `login`: without it, SecItem* uses the default search list (login + System + …), so a
+    /// login-scope delete/read collides with a same-service item in the System keychain — and a
+    /// non-root process can't write System, surfacing as `errSecWrPerm` ("Write permissions
+    /// error") on the import's idempotent delete. Each scope confines to exactly its own keychain.
+    private func openKeychainIfNeeded() -> SecKeychain? {
         var keychain: SecKeychain?
-        // Deprecated API, intentional: the only way to address the system keychain file.
-        let status = SecKeychainOpen("/Library/Keychains/System.keychain", &keychain)
-        return status == errSecSuccess ? keychain : nil
+        switch scope {
+        case .login:
+            // The user's default (login) keychain — where login-scope writes already land,
+            // so reads/deletes confine to the same place instead of spanning every keychain.
+            return SecKeychainCopyDefault(&keychain) == errSecSuccess ? keychain : nil
+        case .system, .file:
+            guard let path = scope.keychainFilePath else { return nil }
+            // Deprecated API, intentional: the only way to address a specific keychain file.
+            return SecKeychainOpen(path, &keychain) == errSecSuccess ? keychain : nil
+        }
     }
 
     private func keychainError(_ action: String, _ status: OSStatus) -> GraftError {
         let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
         var message = "keychain \(action) failed: \(detail)"
-        if status == errSecAuthFailed && scope == .system {
-            message += " (writing the system keychain needs sudo)"
+        if status == errSecAuthFailed && scope != .login {
+            message += " (writing the \(scope.rawValue) keychain needs sudo)"
         }
         return GraftError(message)
     }

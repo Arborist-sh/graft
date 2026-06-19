@@ -33,7 +33,7 @@ struct ConfigTests {
             github: GitHubConfig(appId: 7, target: "repo:o/r"),
             pools: [PoolConfig(name: "mac", image: "g1", os: .macOS, count: 2,
                                labels: ["self-hosted", "macos", "mac"], cpu: 4, memory: 8192)],
-            secrets: SecretsConfig(store: "keychain", scope: "login")
+            secrets: SecretsConfig(store: "keychain")
         )
         let json = String(decoding: try GraftConfig.encoder.encode(cfg), as: UTF8.self)
         #expect(json.contains("\"type\" : \"orchard\""))   // discriminator

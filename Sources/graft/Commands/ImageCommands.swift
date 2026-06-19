@@ -37,16 +37,61 @@ extension Image {
         @Option(name: .long, help: "Override the sapling name from the seed.")
         var name: String?
 
+        @Option(name: .shortAndLong, help: "Config path for GitHub App creds (overrides profile resolution).")
+        var config: String?
+
+        @Option(name: .long, help: "Profile to read GitHub App creds from for private `repos:` (default: active profile).")
+        var profile: String?
+
+        @Option(name: .long, help: "Build-VM network, host-specific: nat | bridged:<iface> | softnet. Overrides the seed's `network:`. See `tart run --net-bridged=list`.")
+        var network: String?
+
         func run() async throws {
             var recipe = try ImageRecipe.load(from: seed)
             if let name { recipe.name = name }
+            // Network is a property of the build *host* (the interface name is machine-specific),
+            // not of the portable seed — so a CLI override wins over any `network:` in the file.
+            if let network { recipe.network = try VMNetwork(spec: network) }
 
             let scriptBody = try recipeScriptBody(recipe, recipeFile: seed)
+            // Only resolve GitHub App creds when there's a private repo to authenticate — keeps
+            // image builds that don't use `repos:` fully decoupled from any profile/keychain.
+            let repoToken = (recipe.repos?.isEmpty == false)
+                ? Self.makeRepoTokenMinter(config: config, profile: profile)
+                : nil
             printErr("growing sapling '\(recipe.name)' from \(recipe.from)…\n")
-            try await ImageBuilder().build(recipe, scriptBody: scriptBody) { line in
+            try await ImageBuilder().build(recipe, scriptBody: scriptBody, repoToken: repoToken) { line in
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
             printErr("\n✓ grew '\(recipe.name)' — reference it in a pool's `image`, or `graft nest --image \(recipe.name)`")
+        }
+
+        /// Build a closure that mints a short-lived GitHub App installation token for a repo URL,
+        /// so private `repos:` precache clones authenticate as graft's App — no deploy key. Resolves
+        /// the App(s) from the active profile (or --config/--profile). Returns nil (→ anonymous
+        /// clones) if no GitHub App is configured; mints nil per-repo if no App can mint for it.
+        static func makeRepoTokenMinter(config: String?, profile: String?)
+            -> (@Sendable (String) async -> String?)?
+        {
+            let path = GraftConfig.resolvePath(explicit: config, profile: profile)
+            guard let cfg = try? GraftConfig.load(from: path) else { return nil }
+            // Candidate Apps: the profile default plus any per-pool overrides, unique by id.
+            // Each App's key lives in its own recorded keychain scope.
+            var seen = Set<Int>()
+            let clients = ([cfg.github] + cfg.pools.map { cfg.gitHub(for: $0) })
+                .compactMap { $0 }
+                .filter { seen.insert($0.appId).inserted }
+                .map { gh in GitHubAppClient(appID: gh.appId, secrets: cfg.secretStore(scope: gh.scope)) }
+            guard !clients.isEmpty else { return nil }
+            return { url in
+                guard let slug = ImageRecipe.githubSlug(from: url) else { return nil }
+                let target = GitHubTarget.repo(owner: slug.owner, name: slug.name)
+                for client in clients {
+                    if let token = try? await client.installationAccessToken(for: target) { return token }
+                }
+                Log.warn("no GitHub App could mint a token for \(url) — cloning anonymously (a private repo will fail)")
+                return nil
+            }
         }
     }
 
@@ -184,7 +229,7 @@ extension Image {
 
         func run() async throws {
             printErr("pulling \(ref)…")
-            try await Tart.pull(ref: ref)
+            try await withInterruptHandling { try await Tart.pull(ref: ref) }
             printErr("✓ pulled \(ref)")
         }
     }
