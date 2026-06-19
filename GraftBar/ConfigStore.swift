@@ -87,6 +87,22 @@ final class ConfigStore: ObservableObject {
         }.value
     }
 
+    /// Tags available for a registry repository (e.g. `ghcr.io/cirruslabs/macos-tahoe-xcode`),
+    /// over the anonymous pull-token flow. Powers the "Browse registry" picker. Returns the
+    /// tag list and a nil error on success, or an empty list and a short message to show
+    /// inline — never throws into the UI.
+    func registryTags(for repository: String) async -> (tags: [String], error: String?) {
+        do { return (try await RegistryClient().tags(forRepository: repository), nil) }
+        catch { return ([], "\(error)") }
+    }
+
+    /// The saved registry catalog (`~/.graft/registries.json`), seeded with defaults on first
+    /// read. Drives the registry browser's grouped list.
+    func registryCatalog() -> [RegistryImage] { RegistryCatalog.load() }
+
+    /// Persist the registry catalog after an add/remove in the browser. Best-effort.
+    func saveRegistryCatalog(_ images: [RegistryImage]) { try? RegistryCatalog.save(images) }
+
     /// Saplings (golden + pulled base images) as full `TartVM` rows — same filter as
     /// `localImages()` but keeps `source`/`size` for provenance display in the list.
     func saplings() async -> [TartVM] {

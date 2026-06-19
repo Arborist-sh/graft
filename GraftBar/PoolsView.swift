@@ -171,6 +171,7 @@ struct PoolEditorSheet: View {
     let onSave: (PoolDraft) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var images: [String] = []
+    @State private var browsingRegistry = false
 
     private var valid: Bool {
         !draft.name.trimmingCharacters(in: .whitespaces).isEmpty &&
@@ -187,16 +188,11 @@ struct PoolEditorSheet: View {
                 LabeledContent("Image") {
                     HStack(spacing: 6) {
                         TextField("", text: $draft.image, prompt: Text("ghcr.io/cirruslabs/macos-tahoe-xcode:latest"))
-                        if !images.isEmpty {
-                            Menu("") {
-                                ForEach(images, id: \.self) { img in
-                                    Button(img) { draft.image = img }
-                                }
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                            .help("Pick a local image")
-                        }
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button { browsingRegistry = true } label: { Image(systemName: "magnifyingglass") }
+                            .buttonStyle(.borderless)
+                            .help("Browse local images & registries")
                     }
                 }
                 Picker("OS", selection: $draft.os) {
@@ -219,7 +215,13 @@ struct PoolEditorSheet: View {
             }
             .padding(16)
         }
-        .frame(width: 440, height: 480)
+        .frame(width: 480, height: 480)
         .task { images = await config.localImages() }
+        .sheet(isPresented: $browsingRegistry) {
+            RegistryBrowserSheet(os: draft.os, localImages: Set(images), config: config) { ref, pullNow in
+                draft.image = ref
+                if pullNow { config.pullSapling(ref: ref) }
+            }
+        }
     }
 }
