@@ -37,5 +37,5 @@
   <!-- version pill -->
   <rect x="438" y="22" width="172" height="30" rx="15" fill="#fae3ec"/>
   <use href="#blossom" transform="translate(457,37) scale(0.5)"/>
-  <text x="474" y="42" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="600" fill="#9c4f6b">v0.5.3 · Sakura</text>
+  <text x="474" y="42" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15.5" font-weight="600" fill="#9c4f6b">v0.5.4 · Sakura</text>
 </svg>
