@@ -96,6 +96,13 @@ final class ConfigStore: ObservableObject {
         catch { return ([], "\(error)") }
     }
 
+    /// The saved registry catalog (`~/.graft/registries.json`), seeded with defaults on first
+    /// read. Drives the registry browser's grouped list.
+    func registryCatalog() -> [RegistryImage] { RegistryCatalog.load() }
+
+    /// Persist the registry catalog after an add/remove in the browser. Best-effort.
+    func saveRegistryCatalog(_ images: [RegistryImage]) { try? RegistryCatalog.save(images) }
+
     /// Saplings (golden + pulled base images) as full `TartVM` rows — same filter as
     /// `localImages()` but keeps `source`/`size` for provenance display in the list.
     func saplings() async -> [TartVM] {

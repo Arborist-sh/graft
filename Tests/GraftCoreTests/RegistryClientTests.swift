@@ -65,15 +65,66 @@ struct RegistryClientTests {
         #expect(RegistryClient.order(["a", "b", "c"]) == ["c", "b", "a"])
     }
 
-    @Test("catalog filters by guest OS and carries no tags in the repo ref")
-    func catalogByOS() {
-        let mac = RegistryCatalog.images(for: .macOS)
-        let linux = RegistryCatalog.images(for: .linux)
-        #expect(!mac.isEmpty)
-        #expect(!linux.isEmpty)
-        #expect(mac.allSatisfy { $0.os == .macOS })
-        #expect(linux.allSatisfy { $0.os == .linux })
-        #expect(RegistryCatalog.known.allSatisfy { !$0.repository.contains(":") })
-        #expect(RegistryCatalog.known.allSatisfy { $0.repository.hasPrefix("ghcr.io/") })
+    @Test("default catalog is well-formed, OS-tagged, and ghcr-hosted")
+    func catalogDefaults() {
+        let defaults = RegistryCatalog.defaults
+        #expect(!defaults.isEmpty)
+        #expect(defaults.contains { $0.os == .macOS })
+        #expect(defaults.contains { $0.os == .linux })
+        #expect(defaults.allSatisfy { !$0.repository.contains(":") })   // no baked-in tags
+        #expect(defaults.allSatisfy { $0.repository.hasPrefix("ghcr.io/") })
+        #expect(defaults.allSatisfy { $0.host == "ghcr.io" })           // host derived
+    }
+
+    @Test("userAdded derives a title from the last segment and strips a tag")
+    func userAddedEntry() {
+        let e = RegistryImage.userAdded("ghcr.io/briancorbin/g1-mobile-ci:latest")
+        #expect(e.title == "g1-mobile-ci")
+        #expect(e.host == "ghcr.io")
+        #expect(e.blurb.isEmpty)
+        #expect(e.os == nil)   // unknown OS → shows for any pool
+    }
+
+    @Test("derives host / owner / imageName / ownerKey from a repo ref")
+    func ownerDerivation() {
+        let e = RegistryImage(repository: "ghcr.io/cirruslabs/macos-tahoe-xcode", title: "x")
+        #expect(e.host == "ghcr.io")
+        #expect(e.owner == "cirruslabs")
+        #expect(e.imageName == "macos-tahoe-xcode")
+        #expect(e.ownerKey == "ghcr.io/cirruslabs")
+    }
+
+    @Test("handles a nested owner path and a bare host/name")
+    func ownerEdgeCases() {
+        let nested = RegistryImage(repository: "ghcr.io/org/team/img", title: "x")
+        #expect(nested.owner == "org/team")
+        #expect(nested.imageName == "img")
+        #expect(nested.ownerKey == "ghcr.io/org/team")
+
+        let bare = RegistryImage(repository: "registry.local/img", title: "x")
+        #expect(bare.owner == "")
+        #expect(bare.imageName == "img")
+        #expect(bare.ownerKey == "registry.local")   // falls back to host when no owner
+    }
+
+    @Test("decodes a sparse entry (repository only), deriving title/blurb/os")
+    func decodeSparse() throws {
+        let json = Data(#"{"repository":"ghcr.io/me/img"}"#.utf8)
+        let e = try JSONDecoder().decode(RegistryImage.self, from: json)
+        #expect(e.repository == "ghcr.io/me/img")
+        #expect(e.title == "img")
+        #expect(e.blurb.isEmpty)
+        #expect(e.os == nil)
+    }
+
+    @Test("a nil-OS entry shows for any pool; a tagged entry only for its OS")
+    func osFiltering() {
+        let mixed = [
+            RegistryImage(repository: "ghcr.io/a/mac", title: "mac", os: .macOS),
+            RegistryImage(repository: "ghcr.io/a/linux", title: "linux", os: .linux),
+            RegistryImage(repository: "ghcr.io/a/any", title: "any", os: nil),
+        ]
+        let forMac = mixed.filter { $0.os == nil || $0.os == .macOS }
+        #expect(forMac.map(\.title).sorted() == ["any", "mac"])
     }
 }

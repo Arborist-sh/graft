@@ -3,22 +3,18 @@ import AppKit
 import GraftCore
 
 /// The Saplings section — the golden images leaves (and nests) clone from. Lists local
-/// images, grows new ones from a `.graft` seed, pulls from a registry, and removes them.
-/// Builds/pulls are long + output-heavy, so they run in a terminal where you can watch.
+/// images, pulls base images from a registry, and removes them. (Growing a sapling from a
+/// `.graft` seed lives in the Seeds tab.) Pulls run in a terminal where you can watch.
 struct SaplingsView: View {
     @ObservedObject var config: ConfigStore
     @AppStorage(Vocabulary.storageKey) private var vocab: Vocabulary = .standard
 
     @State private var images: [TartVM] = []
-    @State private var seeds: [String] = []
     @State private var loading = false
     @State private var pulling = false
     @State private var pendingRemove: String?
     @State private var editingSeed: EditingSeed?
     @State private var status: String?
-    /// Host-specific build network for grows on THIS machine (e.g. "bridged:en0"); empty = NAT.
-    /// Shared with the Seeds tab via the same key; maps to `grow --network`, never baked into a seed.
-    @AppStorage("graft.buildNetwork") private var buildNetwork = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,7 +24,10 @@ struct SaplingsView: View {
         }
         .onAppear { reload() }
         .sheet(isPresented: $pulling) {
-            PullSaplingSheet { ref in config.pullSapling(ref: ref) }
+            RegistryBrowserSheet(mode: .pull, localImages: Set(images.map(\.name)), config: config) { ref, _ in
+                config.pullSapling(ref: ref)
+                status = "Pulling \(ref) — watch the terminal, then Refresh."
+            }
         }
         .sheet(item: $editingSeed, onDismiss: reload) { target in
             SeedEditorSheet(config: config, editing: target.name)
@@ -55,28 +54,6 @@ struct SaplingsView: View {
             Spacer()
             if loading { ProgressView().controlSize(.small) }
             Button { reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-            HStack(spacing: 4) {
-                Image(systemName: "network").foregroundStyle(.secondary)
-                TextField("nat | bridged:en0", text: $buildNetwork)
-                    .textFieldStyle(.roundedBorder).frame(width: 130)
-                Button(action: {}) {
-                    Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Build network for grows on THIS machine — passed as `--network`.\n\n• Leave empty for the default (NAT).\n• Use bridged:<iface> (e.g. bridged:en8) when NAT is blocked, e.g. behind a corporate VPN / IP allow list, so the build VM rides your network.\n\nHost-specific: it's saved in app prefs, never baked into the shareable seed.")
-            }
-            Menu {
-                if seeds.isEmpty {
-                    Text("No seeds in your library yet")
-                } else {
-                    ForEach(seeds, id: \.self) { s in Button(s) { growSeed(s) } }
-                }
-                Divider()
-                Button("From a file…") { growFromFile() }
-            } label: { Label("Grow…", systemImage: "hammer") }
-                .menuStyle(.borderlessButton).fixedSize()
-                .disabled(!config.graftAvailable)
-                .help(config.graftAvailable ? "Build a sapling from one of your seeds" : "Install the graft CLI")
             Button { pulling = true } label: { Label("Pull…", systemImage: "arrow.down.circle") }
                 .disabled(!config.graftAvailable)
                 .help(config.graftAvailable ? "Pull an image from a registry" : "Install the graft CLI")
@@ -113,7 +90,7 @@ struct SaplingsView: View {
                     .padding(.vertical, 4)
                 }
                 if !config.graftAvailable {
-                    Text("Install the graft CLI to grow or pull saplings (remove works without it).")
+                    Text("Install the graft CLI to pull saplings (remove works without it).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -138,8 +115,8 @@ struct SaplingsView: View {
             GraftMark(size: 40, color: Color(nsColor: .tertiaryLabelColor))
             Text("No images yet").font(.headline)
             Text(config.graftAvailable
-                 ? "Grow one from a .graft seed, or pull a base image from a registry."
-                 : "Install the graft CLI, then grow or pull an image.")
+                 ? "Pull a base image from a registry, or grow one over in Seeds."
+                 : "Install the graft CLI, then pull an image (or grow one in Seeds).")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -148,58 +125,10 @@ struct SaplingsView: View {
 
     private func reload() {
         loading = true
-        seeds = config.seedNames()
         Task { images = await config.saplings(); loading = false }
-    }
-
-    /// Grow one of the library seeds (terminal stream); it'll appear here after a Refresh.
-    private func growSeed(_ name: String) {
-        config.growSeed(name, network: buildNetwork)
-        status = "Growing \(name) — watch the terminal, then Refresh."
-    }
-
-    /// Escape hatch: grow from a `.graft` file anywhere on disk (not in the library).
-    private func growFromFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = []
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.message = "Choose a .graft seed (also YAML / JSON)"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        config.growSapling(seedPath: url.path, network: buildNetwork)
-        status = "Growing — watch the terminal, then Refresh."
     }
 
     private func remove(_ name: String) {
         Task { await config.removeSapling(name); reload() }
-    }
-}
-
-/// Pull an image from a registry by reference.
-struct PullSaplingSheet: View {
-    let onPull: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var ref = ""
-
-    private var valid: Bool { !ref.trimmingCharacters(in: .whitespaces).isEmpty }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pull image").font(.headline)
-            TextField("Registry reference", text: $ref,
-                      prompt: Text("ghcr.io/cirruslabs/macos-sequoia-xcode:latest"))
-                .textFieldStyle(.roundedBorder).frame(width: 420)
-            Text("Downloads the image locally — runs in a terminal so you can watch progress.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Pull") { onPull(ref.trimmingCharacters(in: .whitespaces)); dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!valid)
-            }
-        }
-        .padding(20)
-        .frame(width: 480)
     }
 }
