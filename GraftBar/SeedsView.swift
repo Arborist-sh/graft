@@ -621,9 +621,21 @@ struct RepoEditor: View {
                             .buttonStyle(.borderless).foregroundStyle(.secondary)
                     }
                     TextField("", text: $repo.sshKey, prompt: Text("ssh-key (guest path, for private repos)"))
+                    Text("Run after clone — cache-warming commands, one per line (optional)")
+                        .font(.caption2).foregroundStyle(.secondary)
                     TextEditor(text: $repo.run)
                         .font(.system(size: 11, design: .monospaced)).frame(height: 54)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.2)))
+                        .overlay(alignment: .topLeading) {
+                            // TextEditor has no `prompt:`, so fake a placeholder when empty.
+                            if repo.run.isEmpty {
+                                Text("e.g.  npm ci  ·  bundle install  ·  pod install")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 5).padding(.vertical, 4)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                 }
                 .padding(8).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
