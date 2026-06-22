@@ -19,6 +19,9 @@ struct Run: AsyncParsableCommand {
     @Flag(help: "Daemon mode for launchd. launchd does the supervising — this just notes intent.")
     var daemon = false
 
+    @Flag(name: .long, help: "Supervise in this process (blocking, live dashboard) instead of backgrounding a detached engine.")
+    var foreground = false
+
     @Flag(name: .shortAndLong, help: "Echo every step (runner output + events) above the live status, instead of just the spinner.")
     var verbose = false
 
@@ -26,6 +29,51 @@ struct Run: AsyncParsableCommand {
     var monitor = false
 
     func run() async throws {
+        let interactiveStdin = isatty(STDIN_FILENO) != 0
+
+        // A supervisor is already running: never silently start a second one (they'd fight
+        // over the same pidfile + pool.json). Offer to reconnect, kill it, or cancel.
+        if let pid = Daemon.runningPID() {
+            switch try Reconnect.resolveCollision(pid: pid, interactive: interactiveStdin && !daemon) {
+            case .reconnect:
+                await Reconnect.runViewer(specs: Reconnect.specs(config: config, profile: profile))
+                return
+            case .cancel:
+                return
+            case .killAndStart:
+                try await Reconnect.killAndWait(pid: pid)
+            }
+        }
+
+        // Default (interactive): background a detached engine and attach a live viewer, so
+        // the supervisor survives this terminal closing — self-contained, no launchd/nohup.
+        // `--daemon` (launchd) and `--foreground` keep supervising in *this* process.
+        if !daemon, !foreground, interactiveStdin, isatty(STDOUT_FILENO) != 0 {
+            let pid = try await Reconnect.startDetachedEngine(passthrough: passthroughArgs())
+            let log = BootLog.directory.appendingPathComponent("supervisor.log").path
+            printErr("🌳 tending in the background (pid \(pid)) · logs: \(log)")
+            printErr("   attach later: graft arborist attach   ·   stop: graft stop")
+            printErr("   attaching now — Ctrl-C detaches the view (it keeps running)…")
+            await Reconnect.runViewer(specs: Reconnect.specs(config: config, profile: profile))
+            return
+        }
+
+        try await superviseInProcess()
+    }
+
+    /// Flags worth forwarding to the detached engine (it loads its own config + supervises).
+    private func passthroughArgs() -> [String] {
+        var args: [String] = []
+        if let config { args += ["--config", config] }
+        if let profile { args += ["--profile", profile] }
+        if monitor { args.append("--monitor") }
+        return args
+    }
+
+    /// Supervise the pool in *this* process — the live dashboard when interactive, the plain
+    /// log stream under `--daemon`. Blocks until stopped. The default `run()` path backgrounds
+    /// this via a detached `--daemon` engine; `--foreground` runs it here directly.
+    private func superviseInProcess() async throws {
         let path = GraftConfig.resolvePath(explicit: config, profile: profile)
         let cfg = try GraftConfig.load(from: path)
 
@@ -34,6 +82,11 @@ struct Run: AsyncParsableCommand {
             for problem in problems { printErr("  • \(problem)") }
             throw GraftError("config has \(problems.count) problem(s) — run `graft config validate`")
         }
+
+        // Claim liveness up front — before the (possibly slow) image pre-pull — so `graft
+        // status`, `graft stop`, and an attaching viewer see the supervisor immediately.
+        try Daemon.writePidfile()
+        defer { Daemon.removePidfile() }
 
         let provider = try Self.makeProvider(cfg)
         // Each pool's App key may live in a different keychain (login vs system), so the
@@ -86,9 +139,6 @@ struct Run: AsyncParsableCommand {
             },
             status: reporter
         )
-
-        try Daemon.writePidfile()
-        defer { Daemon.removePidfile() }
 
         // Optional in-process health monitor (detection-only). Co-located with the trunk
         // by construction, so it shares the supervisor's state file and is unambiguously

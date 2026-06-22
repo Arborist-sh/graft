@@ -135,10 +135,18 @@ and optional `cpu`/`memory` per leaf. `runnerGroupId` defaults to `1`.
 ### 4. Tend
 
 ```sh
-graft arborist tend            # foreground, Ctrl+C to stop (--monitor to report health)
-graft status                   # daemon liveness + live runner snapshot
+graft arborist tend            # backgrounds a detached supervisor, then attaches a live view
+graft arborist attach          # re-attach a live, read-only view (Ctrl+C detaches; it keeps tending)
+graft status                   # supervisor liveness + live runner snapshot
 graft stop                     # graceful shutdown
 ```
+
+`tend` backgrounds the supervisor by default and attaches a live view; **Ctrl+C detaches
+the view, leaving the supervisor running** (re-attach any time with `graft arborist
+attach`; stop it with `graft stop`). It survives the launching terminal closing — no
+nohup/launchd needed. Run a second `tend` and it detects the running one and offers to
+reconnect, kill, or cancel. Use `--foreground` to supervise in the current process
+(blocking, Ctrl+C stops it), or `--daemon` for launchd-managed hosts.
 
 **Running headless / on an EC2 Mac?** Tart needs an active GUI login session — see
 [docs/ec2-mac-setup.md](docs/ec2-mac-setup.md) for the auto-login setup, verification
@@ -149,7 +157,8 @@ steps, and security trade-offs.
 ```
 graft init                              Interactive setup: backend (Tart | Orchard tree) + profile + pools + keys
 
-graft arborist tend [--profile NAME] [--daemon] [-v] [--monitor]   Tend the pool (supervise; --monitor reports health)
+graft arborist tend [--profile NAME] [--foreground] [--daemon] [-v] [--monitor]   Tend the pool (backgrounds + attaches by default)
+graft arborist attach [--profile NAME]  Attach a live, read-only view to a running supervisor
 graft arborist check                    Verify GitHub App auth end-to-end (no VM boot)
 graft arborist canopy / branches / leaves   Inspect the tree (capacity, workers, VMs)
 graft arborist runners                  List / prune GitHub runner registrations

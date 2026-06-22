@@ -17,8 +17,31 @@ struct Arborist: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "arborist",
         abstract: "Tend the tree — supervise, check, and inspect.",
-        subcommands: [Run.self, Check.self, Tree.Status.self, Tree.Branches.self, Tree.Leaves.self, Runners.self]
+        subcommands: [Run.self, Attach.self, Check.self, Tree.Status.self, Tree.Branches.self, Tree.Leaves.self, Runners.self]
     )
+}
+
+/// `graft arborist attach` — attach a live, read-only view to an already-running supervisor.
+/// Ctrl-C detaches the viewer; the supervisor keeps tending. The reconnect half of GFT-33,
+/// usable on its own (the `tend` collision prompt routes here too).
+struct Attach: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "attach",
+        abstract: "Attach a live, read-only view to a running supervisor (Ctrl-C detaches; it keeps running)."
+    )
+
+    @Option(name: .shortAndLong, help: "Config path (overrides profile resolution).")
+    var config: String?
+
+    @Option(name: .long, help: "Profile to read pool shape from (default: active profile).")
+    var profile: String?
+
+    func run() async throws {
+        guard Daemon.runningPID() != nil else {
+            throw GraftError("graft is not tending — start it with `graft arborist tend`")
+        }
+        await Reconnect.runViewer(specs: Reconnect.specs(config: config, profile: profile))
+    }
 }
 
 /// `graft arborist check` — verify the whole GitHub App auth chain against the real API
