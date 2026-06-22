@@ -158,16 +158,32 @@ via a PR (tap `main` is not protected, so it can be squash-merged once green):
 
 Verify end to end: `brew update && brew upgrade graft && graft --version`.
 
-### 6. Notarized desktop app + cask (needs Apple Developer creds — Brian only)
+### 6. Notarized desktop app + cask — DON'T SKIP THIS EITHER
 
-`scripts/release-app.sh X.Y.Z` builds, Developer-ID-signs, **notarizes**, and staples
-`Graft.app` into `dist/Graft-X.Y.Z.zip`. Requires:
-- a "Developer ID Application" cert in the login keychain, and
-- a stored notary profile named `graft-notary` (`GRAFT_NOTARY_PROFILE` to override).
+> **Easy to forget:** v0.5.4 *and* v0.5.5 shipped without the cask bump at first, leaving
+> `graft-app` two versions behind the CLI. The release isn't done until the app is built,
+> notarized, attached, **and** the cask is bumped. A release covers **two** brew artifacts.
 
-Then attach the `.zip` to the release and bump the **cask** (`graft-app`) with the new
-url + sha256. This step is **not automatable from a headless session** — it's Brian's.
-`brew install --cask arborist-sh/tap/graft-app` installs this (CLI included).
+Needs Apple Developer creds on the machine — so this runs on Brian's Mac, not a headless
+box, but it **is** doable in-session when both are present (verify first):
+- a "Developer ID Application" cert: `security find-identity -v -p codesigning | grep "Developer ID Application"`
+- a stored notary profile `graft-notary`: `xcrun notarytool history --keychain-profile graft-notary`
+  (`GRAFT_NOTARY_PROFILE` overrides the name).
+
+Build + notarize + staple, then attach and bump the cask:
+
+```sh
+scripts/release-app.sh X.Y.Z                 # build → sign → notarize (waits) → staple → re-zip
+                                             # → dist/Graft-X.Y.Z.zip + prints the sha256
+gh release upload vX.Y.Z dist/Graft-X.Y.Z.zip --repo arborist-sh/graft
+gh release view vX.Y.Z --repo arborist-sh/graft --json assets   # expect BOTH the tarball + the zip
+```
+
+Then bump the **cask** `Casks/graft-app.rb` in `arborist-sh/homebrew-tap` (PR + squash-merge):
+`version` → X.Y.Z and `sha256` → the zip checksum (the `url` interpolates `#{version}`, so it
+needs no edit). Verify: `brew update && brew audit --cask --online arborist-sh/tap/graft-app`
+(downloads, checks the sha + notarization) and `brew info --cask graft-app` shows X.Y.Z.
+`brew install --cask arborist-sh/tap/graft-app` installs the app (and pulls the CLI formula).
 
 ## Gotchas
 
@@ -176,5 +192,10 @@ url + sha256. This step is **not automatable from a headless session** — it's 
   until *both* are attached and *both* taps are bumped.
 - The Graft EC2 Mac host runs over SSH and needs the no-nohup boot path + a system
   keychain for secrets.
+- **A dev-link can shadow the brew install.** `scripts/dev-link.sh` points
+  `/opt/homebrew/bin/graft` at a local `.build` binary, so after a release `graft --version`
+  may report the *dev* build, not the freshly-installed brew one. Run `scripts/dev-link.sh
+  restore` to point it back at the Cellar (then re-run `dev-link.sh` if you want dev mode
+  again). Check with `ls -l "$(which graft)"`.
 - `brew style Formula/graft.rb` flags two pre-existing ordering nits (version-before-sha256,
   dependency order). Harmless; `brew style --fix` if you want them gone.
