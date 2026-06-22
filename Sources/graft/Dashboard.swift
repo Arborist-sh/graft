@@ -21,7 +21,10 @@ final class LiveDashboard: @unchecked Sendable {
     /// One configured pool and how many runners it wants — the fixed shape we always draw.
     struct PoolSpec { let name: String; let desired: Int }
 
-    private struct Row { var vm: String?; var phase: RunnerPhase; var kind: String; var since: Date }
+    // Rows hold the *rendered* phase strings (label + stable kind), not a `RunnerPhase`,
+    // so the block can be driven either by the live supervisor reporter (`update`) or by
+    // a persisted `SlotStatus` snapshot (`apply`) — see the read-only reconnect viewer.
+    private struct Row { var vm: String?; var label: String; var kind: String; var since: Date }
 
     private let lock = NSLock()
     private var specs: [PoolSpec] = []               // configured pools, in config order
@@ -88,8 +91,22 @@ final class LiveDashboard: @unchecked Sendable {
         } else {
             let kind = phase.kind
             let priorSince = (rows[slot]?.kind == kind) ? rows[slot]?.since : nil
-            rows[slot] = Row(vm: vm ?? rows[slot]?.vm, phase: phase, kind: kind, since: priorSince ?? Date())
+            rows[slot] = Row(vm: vm ?? rows[slot]?.vm, label: phase.label, kind: kind, since: priorSince ?? Date())
         }
+    }
+
+    /// Replace the live rows from a persisted `PoolState` snapshot. This is the feed for
+    /// the read-only reconnect viewer: it polls `pool.json` and re-applies the supervisor's
+    /// own per-slot phases, so the block looks just like the live one (at poll latency).
+    /// Slots absent from the snapshot drop back to dim "waiting…" placeholders.
+    func apply(slots: [SlotStatus]) {
+        lock.lock(); defer { lock.unlock() }
+        var next: [String: Row] = [:]
+        for slot in slots {
+            registerPoolIfNeeded(for: slot.tag)
+            next[slot.tag] = Row(vm: slot.vmName, label: slot.phaseLabel, kind: slot.phaseKind, since: slot.since)
+        }
+        rows = next
     }
 
     func log(_ line: String, isWarn: Bool) {
@@ -142,7 +159,7 @@ final class LiveDashboard: @unchecked Sendable {
         for idx in 0..<desired {
             guard let row = rows["\(spec.name)#\(idx)"] else { continue }
             up += 1
-            tally[row.phase.kind, default: 0] += 1
+            tally[row.kind, default: 0] += 1
         }
         var parts = [ANSI.bold(spec.name), ANSI.dim("·"), "\(up)/\(desired) up"]
         if !tally.isEmpty {
@@ -163,7 +180,7 @@ final class LiveDashboard: @unchecked Sendable {
         let vm = Self.shortVM(row.vm).padding(toLength: 8, withPad: " ", startingAt: 0)
         let glyph = Self.glyph(kind: row.kind, frame: frame)
         let age = ANSI.dim(Self.age(since: row.since))
-        return "    \(glyph) \(label)  \(vm)  \(row.phase.label)  \(age)"
+        return "    \(glyph) \(label)  \(vm)  \(row.label)  \(age)"
     }
 
     /// Glyph + colour per phase: steady green dot when ready/parked, a spinner while it's
