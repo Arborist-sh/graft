@@ -75,6 +75,20 @@ post-build script.
   sibling worktrees at `graft-workspace/graft-<branch-slug>`.
 - `dist/` is gitignored (release build output lands there).
 
+## Issue tracking (Linear)
+
+- **Workspace:** `the-other-brian-corbin` · **Team:** `Graft` · **Issue prefix:** `GFT-`
+  (e.g. `GFT-33`). Issue URLs: `https://linear.app/the-other-brian-corbin/issue/GFT-<n>`.
+- **No Linear projects** — the team uses a flat issue list, so don't expect/require a
+  project when filing.
+- **Branch naming maps to the issue:** `type/gft-<n>/description` (e.g.
+  `feat/gft-33/reconnect-tend`) — lowercase the key, no username prefix.
+- **Workflow when starting a ticket:** set it to *In Progress* and assign it to yourself,
+  create the sibling worktree + branch, then open a PR and **add the PR as a link/attachment
+  on the issue**. Agents open PRs for review — a human merges; don't self-merge feature PRs.
+- Reference issues in commits/PRs by key (`GFT-33`); past fixes cite the key inline (e.g.
+  the `ownedVMNames` GFT-20 note in `StateManager.swift`).
+
 ## Release checklist (`vX.Y.Z`)
 
 Codename for the 0.5.x series is **Sakura** (used in the banner pill).
