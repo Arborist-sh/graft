@@ -1,0 +1,42 @@
+# Builds the GraftBar desktop app on every PR to main.
+#
+# `swift build` / `swift test` never compile GraftBar — it's an XcodeGen project
+# (project.yml → Graft.xcodeproj) that links the GraftCore SwiftPM product. Without
+# this job a change to a GraftCore public type can break the app while the package
+# build stays green. Graft.xcodeproj is gitignored, so it's regenerated here.
+name: GraftBar
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: graftbar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build GraftBar (Debug, unsigned)
+    runs-on: macos-15   # Apple Silicon; graft is macOS / arm64 only
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app
+        run: >
+          xcodebuild
+          -project Graft.xcodeproj
+          -scheme Graft
+          -configuration Debug
+          build
+          CODE_SIGNING_ALLOWED=NO
