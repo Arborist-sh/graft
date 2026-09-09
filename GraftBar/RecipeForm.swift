@@ -93,6 +93,11 @@ struct RecipeForm: Equatable {
     var scriptFile = ""
     var scripts: [ScriptRow] = []
     var os: GuestOS = .macOS
+    // Carried through unchanged while `.cleanup` stays active, so a seed loaded with
+    // `cleanup: { preserve: [...] }` doesn't get flattened to a bare `cleanup: true` just by
+    // opening it in the editor. Reset to nil on remove() so a toggle-off/toggle-on re-adds it
+    // as the bare bool.
+    var cleanupConfig: ImageRecipe.CleanupConfig?
     // Carried through verbatim — NOT builder components. `network` is host-specific (the
     // interface name belongs to the build machine, not the shareable seed), so it's set per-run
     // via `grow --network`, never edited here; `mounts` has no builder UI either.
@@ -116,7 +121,8 @@ struct RecipeForm: Equatable {
         packageManager = r.packageManager ?? ""; set(.packageManager, r.packageManager != nil)
         cocoapods = r.cocoapods ?? ""; set(.cocoapods, r.cocoapods != nil)
         set(.go, r.go == true); set(.fastlane, r.fastlane == true); set(.xcodeFirstLaunch, r.xcodeFirstLaunch == true)
-        set(.podRepoWarm, r.podRepoWarm == true); set(.cleanup, r.cleanup == true)
+        set(.podRepoWarm, r.podRepoWarm == true); set(.cleanup, r.cleanup?.isEnabled == true)
+        cleanupConfig = r.cleanup
         set(.disableSpotlight, r.disableSpotlight == true); set(.disableSleep, r.disableSleep == true)
 
         brew = r.brew ?? []; set(.brew, !(r.brew ?? []).isEmpty)
@@ -156,6 +162,11 @@ struct RecipeForm: Equatable {
         func sv(_ c: Comp, _ v: String) -> String? { on(c) ? s(v) : nil }
         func av(_ c: Comp, _ v: [String]) -> [String]? { on(c) ? a(v) : nil }
         func flag(_ c: Comp) -> Bool? { on(c) ? true : nil }
+        // Reuse the loaded CleanupConfig (preserve list intact) while the flag stays on;
+        // only a fresh toggle-on (no loaded config) falls back to the bare bool form.
+        func cleanupValue() -> ImageRecipe.CleanupConfig? {
+            on(.cleanup) ? (cleanupConfig ?? ImageRecipe.CleanupConfig(enabled: true)) : nil
+        }
 
         return ImageRecipe(
             name: name.trimmingCharacters(in: .whitespaces),
@@ -170,7 +181,7 @@ struct RecipeForm: Equatable {
             disableSpotlight: flag(.disableSpotlight), disableSleep: flag(.disableSleep),
             description: sv(.description, description), labels: on(.labels) ? m(labels) : nil,
             podRepoWarm: flag(.podRepoWarm), prefetch: av(.prefetch, prefetch), repos: on(.repos) ? repoList : nil,
-            verify: av(.verify, verify), cleanup: flag(.cleanup),
+            verify: av(.verify, verify), cleanup: cleanupValue(),
             cpu: on(.vmShape) ? i(cpu) : nil, memory: on(.vmShape) ? i(memory) : nil,
             disk: on(.vmShape) ? i(disk) : nil, display: on(.vmShape) ? s(display) : nil,
             run: on(.scripts) ? scripts.map(\.body).compactMap(s) : [],
@@ -195,7 +206,8 @@ struct RecipeForm: Equatable {
         case .timezone: timezone = ""; case .hostname: hostname = ""; case .description: description = ""
         case .knownHosts: knownHosts = []
         case .vmShape: cpu = ""; memory = ""; disk = ""; display = ""
-        case .go, .fastlane, .xcodeFirstLaunch, .podRepoWarm, .cleanup, .disableSpotlight, .disableSleep, .os: break
+        case .cleanup: cleanupConfig = nil
+        case .go, .fastlane, .xcodeFirstLaunch, .podRepoWarm, .disableSpotlight, .disableSleep, .os: break
         }
     }
 

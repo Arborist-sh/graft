@@ -65,11 +65,18 @@ public struct ImageRecipe: Codable, Sendable {
         public let ref: String?          // branch or tag (shallow clone; SHAs not supported here)
         public let run: [String]         // install commands, run in the clone to warm caches
         public let sshKey: String?       // guest path to an SSH key (e.g. a mounted one) for private clones
+        /// Opt in to keeping the cloned tree at a stable guest path instead of discarding it.
+        /// `"workspace"` resolves to the GitHub Actions runner's work folder for this repo
+        /// (`$HOME/actions-runner/_work/<name>/<name>`) so a bare `actions/checkout` lands on
+        /// top of the pre-warmed tree; any other value is used literally (a leading `~`
+        /// expands to `$HOME`). Rebaking an image with the tree already present refreshes it
+        /// (`git fetch` + `reset --hard`) rather than re-cloning.
+        public let path: String?
 
-        enum CodingKeys: String, CodingKey { case url, ref, run, sshKey = "ssh-key" }
+        enum CodingKeys: String, CodingKey { case url, ref, run, sshKey = "ssh-key", path }
 
-        public init(url: String, ref: String? = nil, run: [String] = [], sshKey: String? = nil) {
-            self.url = url; self.ref = ref; self.run = run; self.sshKey = sshKey
+        public init(url: String, ref: String? = nil, run: [String] = [], sshKey: String? = nil, path: String? = nil) {
+            self.url = url; self.ref = ref; self.run = run; self.sshKey = sshKey; self.path = path
         }
 
         public init(from decoder: Decoder) throws {
@@ -77,6 +84,7 @@ public struct ImageRecipe: Codable, Sendable {
             url = try c.decode(String.self, forKey: .url)
             ref = try c.decodeIfPresent(String.self, forKey: .ref)
             sshKey = try c.decodeIfPresent(String.self, forKey: .sshKey)
+            path = try c.decodeIfPresent(String.self, forKey: .path)
             if let single = try? c.decode(String.self, forKey: .run) {
                 run = [single]
             } else {
@@ -85,9 +93,86 @@ public struct ImageRecipe: Codable, Sendable {
         }
     }
 
+    /// `cleanup: true` (or `cleanup: { preserve: [...] }`) shrinks the image without undoing
+    /// the cache warming that is the point of it: only entries under `~/Library/Caches` that
+    /// are NOT in the preserve list are removed, so a warm CocoaPods/DerivedData/ccache/SPM/
+    /// yarn cache survives. `preserve` (paths relative to `$HOME`) appends to, not replaces,
+    /// ``CleanupConfig/defaultPreserve``.
+    public struct CleanupConfig: Codable, Sendable, Equatable {
+        /// Preserved by default, relative to `$HOME`. Most of these already live outside
+        /// `~/Library/Caches` (DerivedData, `.npm`, `.cocoapods`, …) so cleanup never touches
+        /// them; the `Library/Caches/...` entries are what the cache-wipe loop skips.
+        public static let defaultPreserve: [String] = [
+            "Library/Caches/CocoaPods",
+            "Library/Caches/ccache",
+            "Library/Developer/Xcode/DerivedData",
+            "Library/Caches/org.swift.swiftpm",
+            "Library/Caches/Yarn",
+            ".yarn/berry/cache",
+            ".npm",
+            ".cache/yarn",
+            ".cocoapods",
+        ]
+
+        public let isEnabled: Bool
+        public let preserve: [String]        // extra paths (relative to $HOME), appended to defaultPreserve
+
+        public var preservePaths: [String] { Self.defaultPreserve + preserve }
+
+        public init(enabled: Bool, preserve: [String] = []) {
+            self.isEnabled = enabled
+            self.preserve = preserve
+        }
+
+        enum CodingKeys: String, CodingKey { case preserve }
+
+        public init(from decoder: Decoder) throws {
+            if let flag = try? decoder.singleValueContainer().decode(Bool.self) {
+                isEnabled = flag
+                preserve = []
+                return
+            }
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            isEnabled = true
+            let raw = try c.decodeIfPresent([String].self, forKey: .preserve) ?? []
+            preserve = try raw.map { try Self.normalize($0, container: c) }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            // `enabled: false` always wins — a disabled cleanup makes the preserve list moot,
+            // and encoding the object form here would silently decode back as enabled.
+            if !isEnabled || preserve.isEmpty {
+                var sv = encoder.singleValueContainer()
+                try sv.encode(isEnabled)
+            } else {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(preserve, forKey: .preserve)
+            }
+        }
+
+        /// Strip a leading `~/`, `./`, or `$HOME/` so paths written either way normalise to
+        /// the same `Library/Caches/...` form the cleanup step matches against. An absolute
+        /// path can't be expressed relative to `$HOME`, so it's a decode-time error rather
+        /// than a silently-ignored (and silently-wiped) entry.
+        private static func normalize(_ path: String, container c: KeyedDecodingContainer<CodingKeys>) throws -> String {
+            var p = path
+            for prefix in ["~/", "./", "$HOME/"] where p.hasPrefix(prefix) {
+                p.removeFirst(prefix.count)
+                break
+            }
+            guard !p.hasPrefix("/") else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .preserve, in: c,
+                    debugDescription: "preserve paths are relative to $HOME (got absolute path \"\(path)\")"
+                )
+            }
+            return p
+        }
+    }
+
     // MARK: Image hygiene / verification
     public let verify: [String]?         // assertions — each must exit 0 or the build fails
-    public let cleanup: Bool?            // brew cleanup + clear caches (smaller image)
+    public let cleanup: CleanupConfig?   // brew cleanup + clear non-warm caches (smaller image)
 
     // MARK: VM shape (applied via `tart set`, not the guest shell)
     public let cpu: Int?                 // tart set --cpu
@@ -126,7 +211,7 @@ public struct ImageRecipe: Codable, Sendable {
         disableSpotlight: Bool? = nil, disableSleep: Bool? = nil,
         description: String? = nil, labels: [String: String]? = nil,
         podRepoWarm: Bool? = nil, prefetch: [String]? = nil, repos: [PrecacheRepo]? = nil,
-        verify: [String]? = nil, cleanup: Bool? = nil,
+        verify: [String]? = nil, cleanup: CleanupConfig? = nil,
         cpu: Int? = nil, memory: Int? = nil, disk: Int? = nil, display: String? = nil,
         run: [String] = [], script: String? = nil, mounts: [Mount]? = nil, os: GuestOS? = nil,
         network: VMNetwork? = nil, ccache: CcacheConfig? = nil
@@ -200,7 +285,7 @@ public struct ImageRecipe: Codable, Sendable {
         prefetch = try c.decodeIfPresent([String].self, forKey: .prefetch)
         repos = try c.decodeIfPresent([PrecacheRepo].self, forKey: .repos)
         verify = try c.decodeIfPresent([String].self, forKey: .verify)
-        cleanup = try c.decodeIfPresent(Bool.self, forKey: .cleanup)
+        cleanup = try c.decodeIfPresent(CleanupConfig.self, forKey: .cleanup)
         cpu = try c.decodeIfPresent(Int.self, forKey: .cpu)
         memory = try c.decodeIfPresent(Int.self, forKey: .memory)
         disk = try c.decodeIfPresent(Int.self, forKey: .disk)
@@ -493,41 +578,133 @@ public struct ImageRecipe: Codable, Sendable {
         guard let host = trimmed.range(of: "github.com") else { return nil }
         var rest = String(trimmed[host.upperBound...])
         while let first = rest.first, first == ":" || first == "/" { rest.removeFirst() }
+        while rest.hasSuffix("/") { rest.removeLast() }   // trailing slash before the `.git` check
         if rest.hasSuffix(".git") { rest.removeLast(4) }
         let parts = rest.split(separator: "/").map(String.init)
         guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
         return (parts[0], parts[1])
     }
 
+    /// Resolve a `PrecacheRepo.path` value to the guest-shell path it should be kept at.
+    /// `"workspace"` maps to the Actions runner's work folder for the repo; anything else is
+    /// used literally, with a leading `~` rewritten to `$HOME`.
+    private static func resolvedRepoPath(_ path: String, url: String) -> String {
+        guard path != "workspace" else {
+            let name = githubSlug(from: url)?.name ?? repoNameFallback(from: url)
+            return "$HOME/actions-runner/_work/\(name)/\(name)"
+        }
+        if path == "~" {
+            return "$HOME"
+        }
+        if path.hasPrefix("~/") {
+            return "$HOME" + path.dropFirst()   // drop just the "~", keep the "/…"
+        }
+        return path
+    }
+
+    /// Last path component of a clone URL, minus a trailing `.git` — used to name the
+    /// workspace dir for non-github hosts (`githubSlug` only understands github.com).
+    private static func repoNameFallback(from url: String) -> String {
+        var name = url.split(separator: "/").last.map(String.init) ?? url
+        if name.hasSuffix(".git") { name.removeLast(4) }
+        return name
+    }
+
+    /// Double-quote a value for interpolation into bash where `$HOME` (etc.) must still
+    /// expand — unlike `shq`, which single-quotes and therefore suppresses expansion.
+    private static func dq(_ s: String) -> String {
+        "\"" + s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "`", with: "\\`")
+            + "\""
+    }
+
     private static func repoStep(_ r: PrecacheRepo, token: String?) -> String {
-        var lines = ["echo \"==> Pre-caching \(r.url) (warm caches; source discarded)\""]
         // An explicit ssh-key wins; otherwise, if we have an App token for a github.com repo,
         // clone over HTTPS with it. Neither → anonymous (public repos).
         let slug = githubSlug(from: r.url)
         let useToken = token != nil && r.sshKey == nil && slug != nil
+        let keptPath = r.path.map { resolvedRepoPath($0, url: r.url) }
+
+        let echoMessage = keptPath.map { "==> Pre-caching \(r.url) (source kept at \($0))" }
+            ?? "==> Pre-caching \(r.url) (warm caches; source discarded)"
+        var lines = ["echo \(dq(echoMessage))"]
         if let key = r.sshKey {
             lines.append("export GIT_SSH_COMMAND=\(shq("ssh -i \(key) -o IdentitiesOnly=yes"))")
         }
-        lines.append("_graft_pc=\"$(mktemp -d)\"")
-        let branch = r.ref.map { " --branch \(Self.shq($0))" } ?? ""
-        if useToken, let token, let slug {
-            // Inject the token as an http.extraheader via `git -c` (command-scoped — NOT written
-            // into the cloned repo's config), the same mechanism actions/checkout uses. The token
-            // is short-lived (~1h) and the working tree is discarded, so nothing auth-bearing bakes
-            // into the image. Reconstruct an https URL from the slug so an ssh-form url still works.
-            let header = "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
-            let url = "https://github.com/\(slug.owner)/\(slug.name).git"
-            lines.append("git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(url)) \"$_graft_pc\"")
+
+        // Where the clone lands: a throwaway mktemp dir by default, or the stable kept path.
+        let dest: String
+        if let keptPath {
+            dest = dq(keptPath)
+            lines.append("mkdir -p \"$(dirname \(dest))\"")   // git makes the leaf dir, not its parents
         } else {
-            lines.append("git clone --depth 1\(branch) \(Self.shq(r.url)) \"$_graft_pc\"")
+            lines.append("_graft_pc=\"$(mktemp -d)\"")
+            dest = "\"$_graft_pc\""
         }
+
+        let branch = r.ref.map { " --branch \(Self.shq($0))" } ?? ""
+        // Inject the App token as an http.extraheader via `git -c` (command-scoped — NOT written
+        // into the cloned repo's config), the same mechanism actions/checkout uses. The token
+        // is short-lived (~1h), so nothing auth-bearing bakes into the image even when the tree
+        // itself is kept. Reconstruct an https URL from the slug so an ssh-form url still works.
+        let header = { () -> String? in
+            guard useToken, let token else { return nil }
+            return "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
+        }()
+        // The URL actually used to reach the remote (https+token when we have an App token
+        // for a github.com repo, the literal `url:` otherwise) — used for both the clone and,
+        // on refresh, the fetch, so auth keeps working regardless of what `origin` points at.
+        let effectiveURL: String = {
+            if let slug, header != nil {
+                return "https://github.com/\(slug.owner)/\(slug.name).git"
+            }
+            return r.url
+        }()
+        func cloneCommand() -> String {
+            if let header {
+                return "git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(effectiveURL)) \(dest)"
+            }
+            return "git clone --depth 1\(branch) \(Self.shq(effectiveURL)) \(dest)"
+        }
+
+        if keptPath != nil {
+            // Rebaking on top of a previous sapling: if the tree is already a git repo there,
+            // refresh it in place instead of failing on a non-empty directory. `[ -d <dest>/.git ]`
+            // (rather than `git rev-parse --git-dir`, which also succeeds for a plain directory
+            // nested *inside* another git repo) so a second kept repo whose path lands inside the
+            // first one's tree clones fresh instead of fetching/resetting the enclosing repo.
+            let fetchRef = Self.shq(r.ref ?? "HEAD")
+            let fetchCommand = header.map { "git -C \(dest) -c http.extraheader=\(Self.shq($0)) fetch --depth 1 \(Self.shq(effectiveURL)) \(fetchRef)" }
+                ?? "git -C \(dest) fetch --depth 1 \(Self.shq(effectiveURL)) \(fetchRef)"
+            lines.append("if [ -d \(dest)/.git ]; then")
+            lines.append("  \(fetchCommand)")
+            lines.append("  git -C \(dest) reset --hard FETCH_HEAD")
+            lines.append("else")
+            lines.append("  \(cloneCommand())")
+            lines.append("fi")
+            // actions/checkout (with default token auth) wipes the tree it's given whenever
+            // `origin` doesn't already point at the bare `https://github.com/<owner>/<name>`
+            // it expects — no `.git` suffix, no ssh form. Normalise it so `clean: false` +
+            // the kept tree actually survives checkout instead of being deleted and re-cloned.
+            if let slug {
+                let checkoutURL = "https://github.com/\(slug.owner)/\(slug.name)"
+                lines.append("git -C \(dest) remote set-url origin \(Self.shq(checkoutURL))")
+            }
+        } else {
+            lines.append(cloneCommand())
+        }
+
         if !r.run.isEmpty {
             lines.append("(")
-            lines.append("  cd \"$_graft_pc\"")
+            lines.append("  cd \(dest)")
             for cmd in r.run { lines.append("  \(cmd)") }
             lines.append(")")
         }
-        lines.append("rm -rf \"$_graft_pc\"")   // discard the working tree — keep only warmed $HOME caches
+        if keptPath == nil {
+            lines.append("rm -rf \"$_graft_pc\"")   // discard the working tree — keep only warmed $HOME caches
+        }
         if r.sshKey != nil { lines.append("unset GIT_SSH_COMMAND") }
         return lines.joined(separator: "\n")
     }
@@ -553,12 +730,31 @@ public struct ImageRecipe: Codable, Sendable {
     }
 
     var cleanupSteps: [String] {
-        guard cleanup == true else { return [] }
+        guard let cleanup, cleanup.isEnabled else { return [] }
+        // Only the direct children of ~/Library/Caches are ever touched, so a preserved path
+        // that lives elsewhere (DerivedData, .npm, .cocoapods, ...) is already safe by
+        // construction — the case pattern below only needs the Library/Caches basenames.
+        let cacheBasenames = cleanup.preservePaths.compactMap { path -> String? in
+            guard path.hasPrefix("Library/Caches/") else { return nil }
+            return path.dropFirst("Library/Caches/".count).split(separator: "/").first.map(String.init)
+        }
+        // Each alternative is single-quoted so the case match is an exact literal — a
+        // basename with a space, `(`, `)`, `;`, a quote, or a glob character can't break
+        // the script or silently widen the match.
+        let quotedBasenames = Array(Set(cacheBasenames)).sorted().map(Self.shq)
+        let pattern = quotedBasenames.isEmpty ? "''" : quotedBasenames.joined(separator: "|")
+        let preservedList = cleanup.preservePaths.sorted().joined(separator: ", ")
         return ["""
-            echo "==> Cleanup (shrinking image)"
+            echo \(Self.shq("==> Cleanup (shrinking image, preserving warm caches: \(preservedList))"))
             brew cleanup -s 2>/dev/null || true
-            rm -rf ~/Library/Caches/* 2>/dev/null || true
             sudo rm -rf /Library/Caches/Homebrew/* 2>/dev/null || true
+            for entry in "$HOME"/Library/Caches/*; do
+              [ -e "$entry" ] || continue
+              case "$(basename "$entry")" in
+                \(pattern)) continue ;;
+              esac
+              rm -rf "$entry" 2>/dev/null || true
+            done
             """]
     }
 
@@ -773,19 +969,21 @@ public struct ImageRecipe: Codable, Sendable {
         # Clone a repo just to warm the global package caches, then discard the source —
         # so a runner's first `yarn/pod install` hits a warm cache. A private github.com
         # repo authenticates automatically as graft's GitHub App (no deploy key); add an
-        # explicit `ssh-key:` to override. NOTE: don't pair with `cleanup: true` below —
-        # cleanup clears ~/Library/Caches, wiping Yarn/CocoaPods/SPM warmth.
+        # explicit `ssh-key:` to override.
         # repos:
         #   - url: https://github.com/me/app.git
         #     ref: main
         #     run: [yarn install --frozen-lockfile]
+        #     # path: workspace  # keep the tree at $HOME/actions-runner/_work/app/app instead
+        #                        # of discarding it, so node_modules/Pods bake too (see docs)
         # ccache: true              # compiler cache for ObjC/C++ pods — the floor under DerivedData
 
         # ── Verify + shrink ────────────────────────────────────────
         verify:
           - node --version
           - pod --version
-        cleanup: true              # brew cleanup + clear caches → smaller image
+        cleanup: true              # brew cleanup + shrink image — preserves warm caches
+                                    # (CocoaPods, DerivedData, ccache, SPM, yarn/npm)
 
         # Escape hatch — raw bash for anything not covered (runs last):
         # run: |

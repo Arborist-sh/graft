@@ -252,6 +252,112 @@ struct ImageRecipeTests {
         #expect(!p.contains("http.extraheader"))
     }
 
+    @Test("repos: path: workspace keeps the tree at the runner's _work dir instead of discarding it")
+    func reposPathWorkspace() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(p.contains("mkdir -p \"$(dirname \(dest))\""))
+        #expect(p.contains("if [ -d \(dest)/.git ]; then"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'https://github.com/me/app.git' 'HEAD'"))
+        #expect(p.contains("git -C \(dest) reset --hard FETCH_HEAD"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/me/app'"))
+        #expect(p.contains("yarn install"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))   // tree is kept, not discarded
+        #expect(p.contains("source kept at"))
+    }
+
+    @Test("repos: path: ~/src/app expands the leading ~ to $HOME")
+    func reposPathLiteralTilde() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"~/src/app"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("$HOME/src/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
+    @Test("repos: path: ~bob/src is NOT tilde-expanded (only a bare ~ or ~/ is)")
+    func reposPathTildeUser() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["echo hi"],"path":"~bob/src"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("\"~bob/src\""))
+        #expect(!p.contains("$HOMEbob"))
+    }
+
+    @Test("repos: with no path still discards the working tree (rm -rf)")
+    func reposDefaultStillDiscards() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("rm -rf \"$_graft_pc\""))
+        #expect(p.contains("warm caches; source discarded"))
+        #expect(!p.contains("remote set-url origin"))   // default (discard) leg never touches origin
+    }
+
+    @Test("repos: App token + path: workspace never leaks the raw token, still uses http.extraheader on both clone and fetch")
+    func reposAppTokenWithPath() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","ref":"main","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let token = "ghs_TESTTOKEN123"
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["https://github.com/org/app.git": token]))
+        let b64 = Data("x-access-token:\(token)".utf8).base64EncodedString()
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+        let header = "http.extraheader='AUTHORIZATION: basic \(b64)'"
+
+        #expect(p.contains("git -c \(header) clone --depth 1 --branch 'main' 'https://github.com/org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) -c \(header) fetch --depth 1 'https://github.com/org/app.git' 'main'"))
+        #expect(p.contains("git -C \(dest) reset --hard FETCH_HEAD"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+        #expect(!p.contains(token))                      // raw token never written, only base64'd
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
+    @Test("repos: path: + ssh-key normalises origin to https but fetches over the original ssh URL")
+    func reposPathSSHKey() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"git@github.com:org/app.git","ssh-key":"/Volumes/My Shared Files/id","ref":"main","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["git@github.com:org/app.git": "tok"]))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("git clone --depth 1 --branch 'main' 'git@github.com:org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'git@github.com:org/app.git' 'main'"))
+        #expect(!p.contains("http.extraheader"))         // ssh-key path never takes the token branch
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+    }
+
+    @Test("repos: path: workspace for a non-github scp URL resolves the workspace name and never rewrites origin")
+    func reposPathNonGithubWorkspaceName() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"git@gitlab.com:org/app.git","run":["echo hi"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("git clone --depth 1 'git@gitlab.com:org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'git@gitlab.com:org/app.git' 'HEAD'"))
+        #expect(!p.contains("remote set-url origin"))    // only normalised for github.com URLs
+    }
+
+    @Test("repos: path: with a literal space keeps every quoted form intact")
+    func reposPathLiteralWithSpace() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","run":["echo hi"],"path":"a path with space"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"a path with space\""
+
+        #expect(p.contains("if [ -d \(dest)/.git ]; then"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'https://github.com/org/app.git' 'HEAD'"))
+        #expect(p.contains("git clone --depth 1 'https://github.com/org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+    }
+
     @Test("githubSlug parses owner/name from https + ssh urls, nil for other hosts")
     func githubSlug() {
         func slug(_ u: String) -> String? { ImageRecipe.githubSlug(from: u).map { "\($0.owner)/\($0.name)" } }
@@ -261,6 +367,7 @@ struct ImageRecipeTests {
         #expect(slug("ssh://git@github.com/org/app.git") == "org/app")
         #expect(slug("https://gitlab.com/org/app.git") == nil)
         #expect(slug("not a url") == nil)
+        #expect(slug("https://github.com/org/app.git/") == "org/app")   // trailing slash before the .git check
     }
 
     @Test("parses VM network specs and decodes them from a recipe")
@@ -302,6 +409,155 @@ struct ImageRecipeTests {
         #expect(!r.from.isEmpty)
         #expect(r.node != nil)                          // template showcases declarative fields
         #expect(r.provisioning(scriptBody: nil) != nil) // and compiles to something runnable
+    }
+
+    @Test("cleanup: true preserves warm build caches instead of wiping ~/Library/Caches")
+    func cleanupPreservesWarmCaches() throws {
+        let r = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":true}"#.utf8)
+        )
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(!p.contains(#"rm -rf "$HOME/Library/Caches""#))
+        #expect(!p.contains("rm -rf ~/Library/Caches"))
+        // Pin the actual mechanism (a quoted case-pattern skip list), not just that the
+        // names appear somewhere in the script — a wholesale `rm -rf` followed by an
+        // unrelated echo of these names would satisfy a looser assertion.
+        #expect(p.contains("'CocoaPods'|'Yarn'|'ccache'|'org.swift.swiftpm') continue ;;"))
+        #expect(p.contains("Library/Developer/Xcode/DerivedData"))
+    }
+
+    @Test("cleanup: { preserve: [...] } appends to the default preserve list and stays enabled")
+    func cleanupObjectFormAddsPreservePaths() throws {
+        let json = #"{"name":"x","from":"b","run":[],"cleanup":{"preserve":["Library/Caches/MyThing"]}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let cleanup = try #require(r.cleanup)
+
+        #expect(cleanup.isEnabled)
+        #expect(cleanup.preserve == ["Library/Caches/MyThing"])
+        #expect(cleanup.preservePaths.contains("Library/Caches/CocoaPods"))
+        #expect(cleanup.preservePaths.contains("Library/Caches/MyThing"))
+
+        let p = try #require(r.provisioning(scriptBody: nil))
+        // The custom entry must land as its own quoted case alternative, alongside the
+        // defaults — not merely appear in the echoed "preserving" message.
+        #expect(p.contains("'CocoaPods'|'MyThing'|'Yarn'|'ccache'|'org.swift.swiftpm') continue ;;"))
+    }
+
+    @Test("cleanup: false and an absent cleanup field both emit no cleanup step")
+    func cleanupDisabledOrAbsent() throws {
+        let disabled = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":false}"#.utf8)
+        )
+        #expect(disabled.cleanupSteps.isEmpty)
+        #expect(disabled.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+
+        let absent = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[]}"#.utf8)
+        )
+        #expect(absent.cleanup == nil)
+        #expect(absent.cleanupSteps.isEmpty)
+        #expect(absent.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+    }
+
+    @Test("preserve entries containing bash-hostile characters are quoted as exact literals")
+    func cleanupQuotesHostilePreserveEntries() throws {
+        let json = #"""
+        {"name":"x","from":"b","run":[],
+         "cleanup":{"preserve":["Library/Caches/Google Chrome","Library/Caches/O'Reilly","Library/Caches/*.tmp"]}}
+        """#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("'Google Chrome'"))               // space stays inside one literal
+        #expect(p.contains(#"'O'\''Reilly'"#))                // embedded ' escaped bash-style
+        #expect(p.contains("'*.tmp'"))                        // glob metachar quoted, not expanded
+    }
+
+    @Test("preserve paths normalise a leading ~/, ./, or $HOME/ and reject absolute paths")
+    func cleanupNormalisesPreservePaths() throws {
+        let json = #"""
+        {"name":"x","from":"b","run":[],
+         "cleanup":{"preserve":["~/Library/Caches/Tilde","./Library/Caches/Dot","$HOME/Library/Caches/HomeVar"]}}
+        """#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let cleanup = try #require(r.cleanup)
+        #expect(cleanup.preserve == ["Library/Caches/Tilde", "Library/Caches/Dot", "Library/Caches/HomeVar"])
+
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("'Tilde'"))
+        #expect(p.contains("'Dot'"))
+        #expect(p.contains("'HomeVar'"))
+
+        let absoluteJSON = #"{"name":"x","from":"b","run":[],"cleanup":{"preserve":["/etc/passwd"]}}"#
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ImageRecipe.self, from: Data(absoluteJSON.utf8))
+        }
+    }
+
+    @Test("encoding CleanupConfig(enabled: false, preserve: [...]) emits the bare bool, and round-trips disabled")
+    func cleanupDisabledEncodesAsBareBoolEvenWithPreserve() throws {
+        let config = ImageRecipe.CleanupConfig(enabled: false, preserve: ["Library/Caches/Kept"])
+        let data = try JSONEncoder().encode(config)
+        #expect(String(decoding: data, as: UTF8.self) == "false")
+
+        let roundTripped = try JSONDecoder().decode(ImageRecipe.CleanupConfig.self, from: data)
+        #expect(roundTripped.isEnabled == false)
+        #expect(roundTripped.preserve.isEmpty)   // the bare-bool form carries no preserve list
+    }
+
+    @Test("the cleanup step actually preserves the named cache and wipes the rest, under real bash")
+    func cleanupStepExecutesCorrectlyUnderBash() async throws {
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory.appendingPathComponent("graft-cleanup-test-\(UUID().uuidString)")
+        let home = tempRoot.appendingPathComponent("home")
+        let bin = tempRoot.appendingPathComponent("bin")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        // Seed ~/Library/Caches with one preserved dir and two that must be wiped —
+        // including one with a space, to prove the quoting fix actually holds under bash.
+        for sub in ["CocoaPods", "junk", "with space"] {
+            let dir = home.appendingPathComponent("Library/Caches/\(sub)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: dir.appendingPathComponent("x"))
+        }
+
+        // No-op `sudo`/`brew` shims ahead of the real ones on PATH: the cleanup step's
+        // `sudo rm -rf /Library/Caches/Homebrew/*` would otherwise either prompt for a
+        // password or (harmlessly, via `|| true`) fail — the shim keeps the test
+        // hermetic and fast either way.
+        for tool in ["sudo", "brew"] {
+            let shim = bin.appendingPathComponent(tool)
+            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: shim)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim.path)
+        }
+
+        let r = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":true}"#.utf8)
+        )
+        let script = try #require(r.cleanupSteps.first)
+        let scriptFile = tempRoot.appendingPathComponent("cleanup.sh")
+        try Data(script.utf8).write(to: scriptFile)
+
+        let result = try await Shell.run(
+            "/bin/bash", ["-eo", "pipefail", scriptFile.path],
+            environment: [
+                "HOME": home.path,
+                "PATH": "\(bin.path):/usr/bin:/bin",
+            ],
+            timeout: .seconds(10)
+        )
+        #expect(result.succeeded)
+
+        #expect(fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/CocoaPods/x").path))
+        #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/junk").path))
+        #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/with space").path))
     }
 
     @Test("ccache: true installs ccache, writes a path-independent config, and prints stats")
