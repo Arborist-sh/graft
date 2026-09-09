@@ -92,7 +92,7 @@ template` for a starter, or hover any field in the VS Code extension.
 | `pod-repo-warm` | boolean | `pod repo update` / `pod setup` |
 | `prefetch` | string[] | commands run in the `repo` mount dir (bundle/yarn/pod install → baked in) |
 | `repos` | list | clone repos into the guest, warm global caches, discard the source (see below) |
-| `ccache` | boolean \| `{max-size}` | `brew install ccache` + a path-independent config, filled by `xcodebuild` (see below) |
+| `ccache` | boolean \| `{max-size}` | `brew install ccache` + a path-independent config, filled by `xcodebuild` (see below) — a bare number for `max-size` (e.g. `20`) is treated as gigabytes |
 | `verify` | string[] | each must exit 0 at the end, or the build fails |
 | `cleanup` | boolean | `brew cleanup` + clear caches → smaller image |
 
@@ -170,7 +170,10 @@ ccache: true            # or: ccache: { max-size: "40G" }   (default 20G)
 When enabled, graft (after `brew:` packages install):
 
 - `brew install ccache` (idempotent)
-- writes ccache's macOS default config, `$HOME/Library/Preferences/ccache/ccache.conf`:
+- writes ccache's macOS default config, `$HOME/Library/Preferences/ccache/ccache.conf`. This
+  is a **strict superset** of React Native's own shipped
+  [`scripts/xcode/ccache.conf`](https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/xcode/ccache.conf) —
+  see below for why that matters:
 
   ```
   cache_dir = $HOME/Library/Caches/ccache
@@ -179,7 +182,10 @@ When enabled, graft (after `brew:` packages install):
   hash_dir = false
   compiler_check = content
   compression = false
-  sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime
+  depend_mode = true
+  file_clone = true
+  inode_cache = true
+  sloppiness = clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
   ```
 
   `base_dir` + `hash_dir = false` make cache hits **path-independent** — a hit from the
@@ -189,12 +195,18 @@ When enabled, graft (after `brew:` packages install):
   removing the only compute cost a cache *hit* has — and disk is cheap on an APFS clone.
   `cache_dir` is pinned to `~/Library/Caches/ccache` so the store's location is
   deterministic, and `cleanup: true` preserves it (see the cleanup preserve list, GFT-35).
+  The rest — `depend_mode`/`file_clone`/`inode_cache` and the `sloppiness` list — is
+  carried over verbatim from RN's own config: CocoaPods targets default
+  `CLANG_ENABLE_MODULES=YES`, and ccache refuses to cache `-fmodules` compiles unless
+  `sloppiness=modules` is paired with direct + depend mode; Xcode passes
+  `-index-store-path` under DerivedData (which differs bake vs. job, hence
+  `clang_index_store`) and `-ivfsoverlay` for mixed ObjC/Swift pods.
 
 - at the end of the `prefetch`/`repos` phase — after a warm `pod install && xcodebuild`
   would have filled the store — runs `ccache -s` so the bake log shows the fill.
 
 **graft does not export `CC`/`CXX`** — `xcodebuild` ignores them; wiring ccache into
-your build is a one-line Podfile change you own, via React Native's post-install hook:
+your build is a Podfile change you own, via React Native's post-install hook:
 
 ```ruby
 react_native_post_install(
@@ -203,10 +215,34 @@ react_native_post_install(
   :mac_catalyst_enabled => false,
   :ccache_enabled => true
 )
+
+# Point RN's ccache wrapper (scripts/xcode/ccache-clang.sh) at graft's config instead of
+# its own. The wrapper only sets CCACHE_CONFIGPATH when it isn't already set — but once
+# CCACHE_CONFIGPATH *is* set, ccache reads that file and ONLY that file (per the ccache
+# manual), so without this, graft's baked config is never read and every setting above is
+# dead. graft's config is a strict superset of RN's own, so pointing here doesn't regress
+# any of RN's tuning.
+installer.pods_project.targets.each do |target|
+  target.build_configurations.each do |config|
+    config.build_settings['CCACHE_CONFIGPATH'] = "#{ENV['HOME']}/Library/Preferences/ccache/ccache.conf"
+  end
+end
 ```
 
 To read the hit rate from a job, add `ccache -s` as a step after the build — a healthy
 warm image should show most ObjC/C++ compiles as cache hits.
+
+**Recommended: workspace-relative DerivedData.** `base_dir` rewriting only makes a hit
+path-independent when the *other* absolute paths baked into a translation unit — notably
+the `-F`/`-I` search paths into DerivedData's `Build/Products` — are also under `base_dir`
+and identical relative to the checkout. With Xcode's default DerivedData location,
+`~/Library/Developer/Xcode/DerivedData/<Name>-<hash-of-project-path>`, the hash means
+those paths differ whenever the *bake* and *job* checkout paths differ, defeating the
+rewrite for anything that references DerivedData directly. Pass `-derivedDataPath
+ios/build` (workspace-relative) to `xcodebuild` at **both** bake time (in a `repos[].run`
+step) and in the job — that keeps the build directory inside the checked-out tree, so
+ccache's path rewriting covers it too, and makes the DerivedData path-hash mismatch moot
+in the first place.
 
 ## Why baking caches is (almost) free: APFS copy-on-write
 

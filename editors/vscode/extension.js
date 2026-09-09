@@ -39,6 +39,7 @@ const FIELDS = {
   "pod-repo-warm": { detail: "boolean", doc: "Warm the CocoaPods spec repo → `pod repo update` / `pod setup`.", insert: "pod-repo-warm: true" },
   prefetch: { detail: "string[]", doc: "Cache-warming commands, run in the `repo` mount dir (bundle/yarn/pod install → baked in).", insert: "prefetch: [$0]" },
   repos: { detail: "list", doc: "Clone repos into the guest to warm global caches (yarn/CocoaPods/bundler), then discard the source — no source baked. `{ url, ref, run, ssh-key }`. For private repos, mount your key read-only (mounts aren't baked).", insert: "repos:\n  - url: $1\n    run:\n      - $0" },
+  ccache: { detail: "boolean | {max-size}", doc: "Compiler cache for ObjC/C++ pods → `brew install ccache` + a path-independent config, filled by `xcodebuild`. `ccache: true` or `ccache: { max-size: \"40G\" }` (default 20G; a bare number is gigabytes). Point your Podfile's `CCACHE_CONFIGPATH` at graft's config or it's never read.", insert: "ccache: true" },
 
   // ── Verify + hygiene ──
   verify: { detail: "string[]", doc: "Assertions run at the end — each must exit 0 or the build fails.", insert: "verify: [$0]" },

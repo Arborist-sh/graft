@@ -658,16 +658,27 @@ public struct ImageRecipe: Codable, Sendable {
         return lines.joined(separator: "\n")
     }
 
-    /// Install ccache + write a path-independent config to its macOS default location
-    /// (`$HOME/Library/Preferences/ccache/ccache.conf` — no `CCACHE_CONFIGPATH` needed at
-    /// job time). `base_dir` + `hash_dir = false` make hits path-independent between the
-    /// bake path and the job's `~/actions-runner/_work/...` path; `compiler_check = content`
-    /// keeps Xcode point updates from silently invalidating everything; `compression = false`
-    /// removes the only compute a hit costs (disk is cheap on an APFS clone). `cache_dir` is
-    /// set explicitly to `$HOME/Library/Caches/ccache` so the store location is deterministic
-    /// for a sibling ticket's cleanup preserve list. We do NOT export CC/CXX globally here —
-    /// xcodebuild ignores them; wiring ccache into a build is the Podfile's job (RN's
-    /// `react_native_post_install(installer, ..., :ccache_enabled => true)`).
+    /// Install ccache + write a config to its macOS default location
+    /// (`$HOME/Library/Preferences/ccache/ccache.conf`). This is a **strict superset** of
+    /// React Native's shipped `ccache.conf` (`scripts/xcode/ccache.conf`, fetched from
+    /// facebook/react-native to confirm) — the Podfile wrapper (`ccache-clang.sh`) sets
+    /// `CCACHE_CONFIGPATH` to RN's file unless it's already set, and per the ccache manual,
+    /// once `CCACHE_CONFIGPATH` is set it is the *only* config read. So a Podfile that wants
+    /// graft's tuning to apply has to point `CCACHE_CONFIGPATH` at this file (see the docs) —
+    /// which then must not regress anything RN's own file relies on, hence the superset.
+    /// `base_dir` + `hash_dir = false` make hits path-independent between the bake path and
+    /// the job's `~/actions-runner/_work/...` checkout; `compiler_check = content` keeps an
+    /// Xcode point update from silently invalidating everything; `compression = false` removes
+    /// the only compute cost a cache *hit* has (disk is cheap on an APFS clone). `cache_dir` is
+    /// pinned to `$HOME/Library/Caches/ccache` so the store location is deterministic for a
+    /// sibling ticket's cleanup preserve list. `depend_mode`/`file_clone`/`inode_cache` and the
+    /// `sloppiness` list are carried over verbatim from RN: CocoaPods targets default
+    /// `CLANG_ENABLE_MODULES=YES`, and ccache refuses to cache `-fmodules` compiles unless
+    /// `sloppiness=modules` is paired with direct + depend mode; Xcode passes
+    /// `-index-store-path` under DerivedData (differs bake vs. job, hence `clang_index_store`)
+    /// and `-ivfsoverlay` for mixed ObjC/Swift pods. We do NOT export CC/CXX globally here —
+    /// xcodebuild ignores them; wiring ccache into a build (CC + CCACHE_CONFIGPATH) is the
+    /// Podfile's job (RN's `react_native_post_install(installer, ..., :ccache_enabled => true)`).
     private static func ccacheStep(_ cfg: CcacheConfig) -> String {
         """
         echo "==> ccache"
@@ -680,7 +691,10 @@ public struct ImageRecipe: Codable, Sendable {
         hash_dir = false
         compiler_check = content
         compression = false
-        sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime
+        depend_mode = true
+        file_clone = true
+        inode_cache = true
+        sloppiness = clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros
         EOF
         """
     }
@@ -804,10 +818,28 @@ public struct ImageRecipe: Codable, Sendable {
             }
             let c = try decoder.container(keyedBy: CodingKeys.self)
             isEnabled = true
-            maxSize = try c.decodeIfPresent(String.self, forKey: .maxSize) ?? Self.defaultMaxSize
+            maxSize = Self.maxSize(c) ?? Self.defaultMaxSize
         }
 
+        /// Tolerate a bare YAML int (`max-size: 20`) the same way `xcode:`/`node:` tolerate a
+        /// bare version number — otherwise an unquoted int throws a `typeMismatch` that fails
+        /// decoding the *whole* recipe. A bare number is treated as gigabytes (`20` -> `"20G"`).
+        private static func maxSize(_ c: KeyedDecodingContainer<CodingKeys>) -> String? {
+            if let s = try? c.decode(String.self, forKey: .maxSize) { return s }
+            if let i = try? c.decode(Int.self, forKey: .maxSize) { return "\(i)G" }
+            if let d = try? c.decode(Double.self, forKey: .maxSize) { return "\(d)G" }
+            return nil
+        }
+
+        /// When disabled, encode the bare `false` (a single-value container) rather than
+        /// `{max-size: ...}` — otherwise re-saving a `.graft` with `ccache: false` (e.g. from
+        /// GraftBar's structured editor) silently turns it back into an enabled config.
         public func encode(to encoder: Encoder) throws {
+            guard isEnabled else {
+                var sv = encoder.singleValueContainer()
+                try sv.encode(false)
+                return
+            }
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(maxSize, forKey: .maxSize)
         }
