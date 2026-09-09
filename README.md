@@ -291,6 +291,7 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 
 - **[docs/dev-boxes.md](docs/dev-boxes.md)** — `graft nest`: clone vs mount, persistence, `--code`, the picker
 - **[docs/images-and-caching.md](docs/images-and-caching.md)** — `.graft` recipes, the full field reference, CoW caching
+- **[docs/rn-ios-fast-builds.md](docs/rn-ios-fast-builds.md)** — React Native iOS fast-build recipe + workflow (baked workspace, ccache)
 - **[docs/orchard.md](docs/orchard.md)** — the multi-host Orchard backend: controller/workers, service account, config
 - **[docs/health-and-monitoring.md](docs/health-and-monitoring.md)** — `arborist --tend`: detectors, event schema, webhooks, the self-healing seam
 - **[docs/ec2-mac-setup.md](docs/ec2-mac-setup.md)** — headless / EC2 Mac runners (auto-login, bridged networking)

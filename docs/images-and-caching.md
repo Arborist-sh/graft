@@ -142,6 +142,11 @@ network-fetch cost with zero workflow changes.
 `repos:` automates exactly that warming: clone → run installs → **discard the working
 tree**, keeping only the warmed `$HOME` caches. No source is baked into the image.
 
+For a React Native iOS team, `repos:` + `path:` + `ccache:` together get a job's
+`xcodebuild` down to a couple of minutes — see
+[docs/rn-ios-fast-builds.md](rn-ios-fast-builds.md) for the full recipe and the paired
+`clean: false` / conditional-`pod-install` workflow.
+
 ```yaml
 known-hosts: [github.com]                 # so the clone doesn't prompt on the host key
 mounts:

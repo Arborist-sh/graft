@@ -1,0 +1,48 @@
+# React Native iOS — fast-build reference image. Bakes node_modules/Pods/DerivedData at a
+# stable path (path: workspace) + a warm ccache, so a runner's yarn/pod install and
+# xcodebuild are near-instant. See docs/rn-ios-fast-builds.md for the paired workflow.
+#
+# NOTE: with `path: workspace` the app's source is baked into this image (not just its
+# caches) — keep it private, don't `graft image push` it anywhere public.
+name: rn-ios
+from: ghcr.io/cirruslabs/macos-tahoe-xcode:latest
+
+# ── Toolchain ──────────────────────────────────────────────
+node: "20.19.4"
+ruby: "3.3.5"
+cocoapods: "1.15.2"
+xcode-first-launch: true
+warm-simulators: ["iPhone 17 Pro"]  # cold-boot once to warm sim caches
+
+# ── System config ───────────────────────────────────────────
+known-hosts: [github.com]
+disable-spotlight: true             # mdutil -a -i off (CI perf)
+
+# ── VM shape ───────────────────────────────────────────────
+# xcodebuild is CPU-bound and barely parallelizes across VMs, so one big leaf beats two
+# small ones — size generously rather than splitting the pool.
+cpu: 8
+memory: 16384                       # megabytes
+
+# ── Warm the app tree + caches ───────────────────────────────
+# Replace the url with your repo. `path: workspace` keeps the clone at the exact path
+# actions/checkout uses, so node_modules/Pods/DerivedData all bake in at the job's path.
+repos:
+  - url: https://github.com/your-org/app.git
+    ref: main
+    path: workspace
+    run:
+      - yarn install --frozen-lockfile
+      - cd ios && bundle exec pod install
+      - cd ios && xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+      # marker the job compares against to decide whether pod install is needed at all
+      - shasum -a 256 ios/Podfile.lock | awk '{print $1}' > "$HOME/.rn-ios-baked-podfile-lock-sha256"
+
+ccache: true                        # floor under DerivedData for ObjC/C++ pods
+
+# ── Verify + shrink ────────────────────────────────────────
+verify:
+  - node --version
+  - pod --version
+  - ccache --version
+cleanup: true                       # preserves CocoaPods/DerivedData/ccache/yarn caches
