@@ -105,6 +105,10 @@ cleanup:
   preserve: [Library/Caches/MyThing]
 ```
 
+Only the first path component under `Library/Caches` is ever matched, so a nested
+`preserve` entry (e.g. `Library/Caches/MyThing/nested`) preserves the whole
+`Library/Caches/MyThing` top-level directory, not just the nested path.
+
 **VM shape** (via `tart set`, inherited by every clone):
 
 | Field | Type | Compiles to |

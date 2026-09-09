@@ -63,7 +63,22 @@
     },
 
     "verify": { "type": "array", "items": { "type": "string" }, "description": "Assertions run at the end — each must exit 0 or the build fails." },
-    "cleanup": { "type": "boolean", "description": "brew cleanup + clear caches at the end (smaller image)." },
+    "cleanup": {
+      "description": "brew cleanup + clear non-warm caches at the end (smaller image). `true` preserves a default list of warm build caches (CocoaPods, ccache, DerivedData, SPM, Yarn/npm); the object form adds your own paths (relative to $HOME) to that list.",
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "properties": {
+            "preserve": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Extra paths (relative to $HOME) to keep, appended to the default preserve list."
+            }
+          }
+        }
+      ]
+    },
 
     "cpu": { "type": "integer", "description": "CPU count for the baked image (tart set --cpu)." },
     "memory": { "type": "integer", "description": "Memory in megabytes (tart set --memory)." },

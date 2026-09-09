@@ -125,17 +125,39 @@ public struct ImageRecipe: Codable, Sendable {
             }
             let c = try decoder.container(keyedBy: CodingKeys.self)
             isEnabled = true
-            preserve = try c.decodeIfPresent([String].self, forKey: .preserve) ?? []
+            let raw = try c.decodeIfPresent([String].self, forKey: .preserve) ?? []
+            preserve = try raw.map { try Self.normalize($0, container: c) }
         }
 
         public func encode(to encoder: Encoder) throws {
-            if preserve.isEmpty {
+            // `enabled: false` always wins — a disabled cleanup makes the preserve list moot,
+            // and encoding the object form here would silently decode back as enabled.
+            if !isEnabled || preserve.isEmpty {
                 var sv = encoder.singleValueContainer()
                 try sv.encode(isEnabled)
             } else {
                 var c = encoder.container(keyedBy: CodingKeys.self)
                 try c.encode(preserve, forKey: .preserve)
             }
+        }
+
+        /// Strip a leading `~/`, `./`, or `$HOME/` so paths written either way normalise to
+        /// the same `Library/Caches/...` form the cleanup step matches against. An absolute
+        /// path can't be expressed relative to `$HOME`, so it's a decode-time error rather
+        /// than a silently-ignored (and silently-wiped) entry.
+        private static func normalize(_ path: String, container c: KeyedDecodingContainer<CodingKeys>) throws -> String {
+            var p = path
+            for prefix in ["~/", "./", "$HOME/"] where p.hasPrefix(prefix) {
+                p.removeFirst(prefix.count)
+                break
+            }
+            guard !p.hasPrefix("/") else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .preserve, in: c,
+                    debugDescription: "preserve paths are relative to $HOME (got absolute path \"\(path)\")"
+                )
+            }
+            return p
         }
     }
 
@@ -180,7 +202,7 @@ public struct ImageRecipe: Codable, Sendable {
         disableSpotlight: Bool? = nil, disableSleep: Bool? = nil,
         description: String? = nil, labels: [String: String]? = nil,
         podRepoWarm: Bool? = nil, prefetch: [String]? = nil, repos: [PrecacheRepo]? = nil,
-        verify: [String]? = nil, cleanup: Bool? = nil,
+        verify: [String]? = nil, cleanup: CleanupConfig? = nil,
         cpu: Int? = nil, memory: Int? = nil, disk: Int? = nil, display: String? = nil,
         run: [String] = [], script: String? = nil, mounts: [Mount]? = nil, os: GuestOS? = nil,
         network: VMNetwork? = nil
@@ -197,7 +219,7 @@ public struct ImageRecipe: Codable, Sendable {
         self.disableSpotlight = disableSpotlight; self.disableSleep = disableSleep
         self.description = description; self.labels = labels
         self.podRepoWarm = podRepoWarm; self.prefetch = prefetch; self.repos = repos
-        self.verify = verify; self.cleanup = cleanup.map { CleanupConfig(enabled: $0) }
+        self.verify = verify; self.cleanup = cleanup
         self.cpu = cpu; self.memory = memory; self.disk = disk; self.display = display
         self.run = run; self.script = script; self.mounts = mounts; self.os = os
         self.network = network
@@ -602,10 +624,14 @@ public struct ImageRecipe: Codable, Sendable {
             guard path.hasPrefix("Library/Caches/") else { return nil }
             return path.dropFirst("Library/Caches/".count).split(separator: "/").first.map(String.init)
         }
-        let pattern = Array(Set(cacheBasenames)).sorted().joined(separator: "|")
+        // Each alternative is single-quoted so the case match is an exact literal — a
+        // basename with a space, `(`, `)`, `;`, a quote, or a glob character can't break
+        // the script or silently widen the match.
+        let quotedBasenames = Array(Set(cacheBasenames)).sorted().map(Self.shq)
+        let pattern = quotedBasenames.isEmpty ? "''" : quotedBasenames.joined(separator: "|")
         let preservedList = cleanup.preservePaths.sorted().joined(separator: ", ")
         return ["""
-            echo "==> Cleanup (shrinking image, preserving warm caches: \(preservedList))"
+            echo \(Self.shq("==> Cleanup (shrinking image, preserving warm caches: \(preservedList))"))
             brew cleanup -s 2>/dev/null || true
             sudo rm -rf /Library/Caches/Homebrew/* 2>/dev/null || true
             for entry in "$HOME"/Library/Caches/*; do
