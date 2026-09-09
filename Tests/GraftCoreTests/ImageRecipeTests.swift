@@ -411,6 +411,23 @@ struct ImageRecipeTests {
         #expect(r.provisioning(scriptBody: nil) != nil) // and compiles to something runnable
     }
 
+    @Test("examples/images/rn-ios.graft loads and compiles: baked workspace tree, warm ccache")
+    func rnIOSExample() throws {
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let recipePath = thisFile
+            .deletingLastPathComponent()  // ImageRecipeTests.swift → GraftCoreTests/
+            .deletingLastPathComponent()  // GraftCoreTests/ → Tests/
+            .deletingLastPathComponent()  // Tests/ → repo root
+            .appendingPathComponent("examples/images/rn-ios.graft")
+
+        let r = try ImageRecipe.load(from: recipePath.path)
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("_work/app/app"))              // repos: path: workspace baked the tree
+        #expect(p.contains("brew install ccache"))         // ccache: true
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))       // kept tree, not discarded
+    }
+
     @Test("cleanup: true preserves warm build caches instead of wiping ~/Library/Caches")
     func cleanupPreservesWarmCaches() throws {
         let r = try JSONDecoder().decode(
