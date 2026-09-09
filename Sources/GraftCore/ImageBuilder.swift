@@ -50,6 +50,7 @@ public struct ImageBuilder: Sendable {
         repoToken: (@Sendable (String) async -> String?)? = nil,
         onLine: (@Sendable (String) -> Void)? = nil
     ) async throws {
+        try await Tart.ensureInstalled()
         await sweepOrphans()                          // clear leftovers from prior failed builds
         try await Tart.ensureAvailable(recipe.from)  // pull the base if it isn't cached
         let temp = Self.tempPrefix + UUID().uuidString.prefix(8).lowercased()

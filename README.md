@@ -55,7 +55,10 @@ credentials or a booted VM to fully prove are flagged in code (`TODO(real-VM)`).
 ## Requirements
 
 - Apple Silicon Mac
-- [Tart](https://tart.run) (`brew install cirruslabs/cli/tart`)
+- [Tart](https://tart.run) — install it first:
+  ```sh
+  brew install cirruslabs/cli/tart
+  ```
 - Swift 6 toolchain
 - A GitHub App (not a PAT) with self-hosted-runner admin permission
 
@@ -309,6 +312,12 @@ Shipped: ✅ **full desktop app** (`Graft.app` — Dashboard, Canopy, Nests, Sap
 
 ## Install
 
+Graft no longer pulls in Tart automatically — install it first:
+
+```sh
+brew install cirruslabs/cli/tart
+```
+
 CLI + daemon:
 
 ```sh
@@ -321,7 +330,7 @@ Menu-bar app (installs the CLI too):
 brew install --cask arborist-sh/tap/graft-app
 ```
 
-Apple Silicon only. [Tart](https://tart.run) is pulled in as a dependency.
+Apple Silicon only.
 
 ## License
 
