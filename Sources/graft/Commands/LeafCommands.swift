@@ -24,7 +24,7 @@ extension Leaf {
         var os: GuestOS = .macOS
 
         func run() async throws {
-            let provider = LocalTartProvider()
+            let provider = try await LocalTartProvider.preflighted()
             try await withInterruptHandling { try await Tart.ensureAvailable(image) }   // pull if not cached (Ctrl-C cancels it)
             printErr("cloning \(image) and booting…")
             let vm = try await provider.acquire(image: image, os: os, mounts: [])
@@ -39,6 +39,7 @@ extension Leaf {
         var name: String
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             try? await Tart.stop(name: name)
             guard try await Tart.exists(name: name) else {
                 printErr("no such VM: \(name)")
@@ -56,6 +57,7 @@ extension Leaf {
         var all = false
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             let vms = all ? try await Tart.list() : try await LocalTartProvider().graftManagedVMs()
             guard !vms.isEmpty else {
                 printErr(all ? "no VMs" : "no graft-managed VMs")
@@ -77,6 +79,7 @@ extension Leaf {
         var wait = false
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             if wait {
                 print(try await Tart.waitForIP(name: name))
             } else if let ip = try await Tart.ip(name: name) {

@@ -88,7 +88,7 @@ struct Run: AsyncParsableCommand {
         try Daemon.writePidfile()
         defer { Daemon.removePidfile() }
 
-        let provider = try Self.makeProvider(cfg)
+        let provider = try await Self.makeProvider(cfg)
         // Each pool's App key may live in a different keychain (login vs system), so the
         // scope is resolved per App ID — not assumed to be one keychain for the whole run.
         let scopes = Set(cfg.distinctGitHubConfigs().map(\.scope.rawValue)).sorted().joined(separator: "+")
@@ -174,10 +174,10 @@ struct Run: AsyncParsableCommand {
     /// Pick the VM backend from config: local Tart (single host) or an Orchard
     /// controller (multi-host fleet). `validate()` has already checked that an
     /// `orchard` block is present when the provider is "orchard".
-    static func makeProvider(_ cfg: GraftConfig) throws -> any VMProvider {
+    static func makeProvider(_ cfg: GraftConfig) async throws -> any VMProvider {
         switch cfg.provider {
         case .tart:
-            return LocalTartProvider()
+            return try await LocalTartProvider.preflighted()
         case .orchard(var orchard):
             // Token resolution: explicit config value wins; otherwise pull it from the
             // Keychain (where `graft init` stashes it) so it's not in plaintext.

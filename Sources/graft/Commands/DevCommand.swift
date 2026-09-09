@@ -64,7 +64,7 @@ extension Dev {
         enum Source { case clone(url: String, name: String); case resume(String); case mount; case scratch }
 
         func run() async throws {
-            let provider = LocalTartProvider()
+            let provider = try await LocalTartProvider.preflighted()
             let cwd = FileManager.default.currentDirectoryPath
 
             // 1) Resolve the source — from the target, or the interactive picker.
@@ -243,6 +243,7 @@ extension Dev {
         static let configuration = CommandConfiguration(commandName: "ls", abstract: "List dev boxes.")
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             let boxes = (try await Tart.list())
                 .filter { $0.name.hasPrefix("graft-dev-") }
                 .sorted { $0.name < $1.name }
@@ -262,6 +263,7 @@ extension Dev {
         var box: String?
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             let boxes = (try await Tart.list())
                 .filter { $0.name.hasPrefix("graft-dev-") }
                 .sorted { $0.name < $1.name }

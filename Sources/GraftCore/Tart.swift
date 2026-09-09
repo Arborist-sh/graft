@@ -17,11 +17,38 @@ public struct TartVM: Sendable, Codable, Equatable {
     public var isRunning: Bool { state.lowercased() == "running" }
 }
 
+/// A dedicated error for failures that aren't a subprocess/exit-code problem but a
+/// missing prerequisite for the local Tart backend.
+public enum TartError: Error, LocalizedError {
+    case tartNotInstalled
+
+    public var errorDescription: String? {
+        switch self {
+        case .tartNotInstalled:
+            return "tart not found on PATH. graft drives the tart CLI (https://tart.run) — install it with: brew install cirruslabs/cli/tart"
+        }
+    }
+}
+
 /// Thin async wrappers over the `tart` CLI. No policy here — just one function per
 /// `tart` subcommand, plus the IP-polling loop that everything else needs. Policy
 /// (capacity tiers, naming, teardown ordering) lives in `LocalTartProvider`.
 public enum Tart {
     static let executable = "tart"
+
+    /// Verify `tart` is on PATH before anything that depends on it runs. The Homebrew
+    /// formula no longer pulls in `cirruslabs/cli/tart`, so a missing `tart` is now an
+    /// expected first-run state — this turns it into one clear, early message instead of
+    /// a raw `env: tart: No such file or directory` from whatever subcommand happens to
+    /// shell out first. A pure PATH scan (no spawn) so it's cheap enough to call at the
+    /// start of every local-Tart code path, and easy to test with a controlled `path`.
+    public static func ensureInstalled(path: String = ProcessInfo.processInfo.environment["PATH"] ?? "") async throws {
+        let fm = FileManager.default
+        let onPath = path.split(separator: ":").contains { dir in
+            fm.isExecutableFile(atPath: (String(dir) as NSString).appendingPathComponent(executable))
+        }
+        guard onPath else { throw TartError.tartNotInstalled }
+    }
 
     public static func clone(image: String, to name: String) async throws {
         try await Shell.runChecked(executable, ["clone", image, name])

@@ -118,6 +118,7 @@ extension Image {
         var image: String
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             guard try await Tart.exists(name: image) else {
                 throw GraftError("no local image '\(image)' — `graft sapling pull <ref>` first, or check `graft sapling list`")
             }
@@ -162,6 +163,7 @@ extension Image {
         static let configuration = CommandConfiguration(abstract: "List local images and VMs.")
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             let vms = try await Tart.list()
             guard !vms.isEmpty else { printErr("no images"); return }
             for vm in vms.sorted(by: { $0.name < $1.name }) {
@@ -178,6 +180,7 @@ extension Image {
         var name: String
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             try? await Tart.stop(name: name)
             guard try await Tart.exists(name: name) else { throw GraftError("no image named '\(name)'") }
             try await Tart.delete(name: name)
@@ -192,6 +195,7 @@ extension Image {
         var force = false
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             let temps = (try? await Tart.list())?.filter { ImageBuilder.isOrphanTemp($0.name) } ?? []
             guard !temps.isEmpty else { printErr("no orphaned build VMs"); return }
             // Skip running temps by default — a running graft-imgbuild is most likely an
@@ -215,6 +219,7 @@ extension Image {
         var ref: String
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             printErr("pushing '\(name)' → \(ref)…")
             try await Tart.push(name: name, to: ref)
             printErr("✓ pushed")
@@ -228,6 +233,7 @@ extension Image {
         var ref: String
 
         func run() async throws {
+            try await Tart.ensureInstalled()
             printErr("pulling \(ref)…")
             try await withInterruptHandling { try await Tart.pull(ref: ref) }
             printErr("✓ pulled \(ref)")

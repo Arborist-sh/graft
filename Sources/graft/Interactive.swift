@@ -415,8 +415,8 @@ enum Wizard {
             config.provider = .tart
             // Tart is the runtime for this backend but isn't invoked during init itself —
             // warn (don't block) so a profile can still be scaffolded for another host.
-            if (try? await Shell.run("tart", ["--version"]))?.succeeded != true {
-                printErr(ANSI.yellow("  ⚠ `tart` not found on PATH — `graft run` needs it: brew install cirruslabs/cli/tart"))
+            if (try? await Tart.ensureInstalled()) == nil {
+                printErr(ANSI.yellow("  ⚠ \(TartError.tartNotInstalled.errorDescription ?? "")"))
             }
             return
         }

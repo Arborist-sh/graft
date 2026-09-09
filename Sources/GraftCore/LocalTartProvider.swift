@@ -14,6 +14,15 @@ public struct LocalTartProvider: VMProvider {
 
     public init() {}
 
+    /// Construct a provider after verifying `tart` is actually on PATH. Prefer this over
+    /// plain `LocalTartProvider()` at every command entry point that's about to drive the
+    /// local Tart backend — it's the choke point that turns a missing `tart` into one
+    /// clear message instead of a raw failure from whatever `tart` invocation runs first.
+    public static func preflighted() async throws -> LocalTartProvider {
+        try await Tart.ensureInstalled()
+        return LocalTartProvider()
+    }
+
     /// Ceiling of VMs of this OS the host can run. macOS is Apple's kernel-enforced
     /// hard limit of 2; Linux is bounded by cores (heuristic, ~half). The supervisor
     /// tracks its own consumption against this ceiling — the provider just reports the
