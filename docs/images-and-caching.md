@@ -186,6 +186,15 @@ Two workflow adjustments are required for the kept tree to actually help:
   idempotent-cheap the way `yarn install` is; if `ios/Podfile.lock` matches what's
   already in the baked `Pods/`, skip the step entirely rather than re-running it.
 
+For a github.com repo, graft also normalises the kept clone's `origin` to the bare
+`https://github.com/<owner>/<name>` (no `.git`) that `actions/checkout` expects when the
+job uses its default token-based auth — otherwise checkout sees a mismatched `origin`
+(whatever form you cloned with — ssh, `.git`-suffixed https, etc.) and wipes the
+directory before re-cloning cold, even with `clean: false`. If your workflow instead
+passes checkout its own `ssh-key:` input, it expects `origin` in the `git@github.com:` scp
+form instead, which graft's normalisation doesn't match — in that case, point `path:` at a
+literal path and accept a re-clone each run, or don't pass checkout an `ssh-key:` input.
+
 **Tradeoff:** with `path:` set, the repo's *source* is now baked into the image, not just
 its caches. That's fine for a private runner pool, but matters if the image is ever
 pushed to Orchard or another registry — anyone who can pull the image can read the

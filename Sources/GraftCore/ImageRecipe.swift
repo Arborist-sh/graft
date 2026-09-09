@@ -495,6 +495,7 @@ public struct ImageRecipe: Codable, Sendable {
         guard let host = trimmed.range(of: "github.com") else { return nil }
         var rest = String(trimmed[host.upperBound...])
         while let first = rest.first, first == ":" || first == "/" { rest.removeFirst() }
+        while rest.hasSuffix("/") { rest.removeLast() }   // trailing slash before the `.git` check
         if rest.hasSuffix(".git") { rest.removeLast(4) }
         let parts = rest.split(separator: "/").map(String.init)
         guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
@@ -509,8 +510,11 @@ public struct ImageRecipe: Codable, Sendable {
             let name = githubSlug(from: url)?.name ?? repoNameFallback(from: url)
             return "$HOME/actions-runner/_work/\(name)/\(name)"
         }
-        if path.hasPrefix("~") {
-            return "$HOME" + path.dropFirst()
+        if path == "~" {
+            return "$HOME"
+        }
+        if path.hasPrefix("~/") {
+            return "$HOME" + path.dropFirst()   // drop just the "~", keep the "/…"
         }
         return path
     }
@@ -540,8 +544,9 @@ public struct ImageRecipe: Codable, Sendable {
         let useToken = token != nil && r.sshKey == nil && slug != nil
         let keptPath = r.path.map { resolvedRepoPath($0, url: r.url) }
 
-        var lines = [keptPath.map { "echo \"==> Pre-caching \(r.url) (source kept at \($0))\"" }
-                      ?? "echo \"==> Pre-caching \(r.url) (warm caches; source discarded)\""]
+        let echoMessage = keptPath.map { "==> Pre-caching \(r.url) (source kept at \($0))" }
+            ?? "==> Pre-caching \(r.url) (warm caches; source discarded)"
+        var lines = ["echo \(dq(echoMessage))"]
         if let key = r.sshKey {
             lines.append("export GIT_SSH_COMMAND=\(shq("ssh -i \(key) -o IdentitiesOnly=yes"))")
         }
@@ -565,26 +570,45 @@ public struct ImageRecipe: Codable, Sendable {
             guard useToken, let token else { return nil }
             return "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
         }()
-        func cloneCommand() -> String {
-            if let header, let slug {
-                let url = "https://github.com/\(slug.owner)/\(slug.name).git"
-                return "git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(url)) \(dest)"
+        // The URL actually used to reach the remote (https+token when we have an App token
+        // for a github.com repo, the literal `url:` otherwise) — used for both the clone and,
+        // on refresh, the fetch, so auth keeps working regardless of what `origin` points at.
+        let effectiveURL: String = {
+            if let slug, header != nil {
+                return "https://github.com/\(slug.owner)/\(slug.name).git"
             }
-            return "git clone --depth 1\(branch) \(Self.shq(r.url)) \(dest)"
+            return r.url
+        }()
+        func cloneCommand() -> String {
+            if let header {
+                return "git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(effectiveURL)) \(dest)"
+            }
+            return "git clone --depth 1\(branch) \(Self.shq(effectiveURL)) \(dest)"
         }
 
         if keptPath != nil {
             // Rebaking on top of a previous sapling: if the tree is already a git repo there,
-            // refresh it in place instead of failing on a non-empty directory.
+            // refresh it in place instead of failing on a non-empty directory. `[ -d <dest>/.git ]`
+            // (rather than `git rev-parse --git-dir`, which also succeeds for a plain directory
+            // nested *inside* another git repo) so a second kept repo whose path lands inside the
+            // first one's tree clones fresh instead of fetching/resetting the enclosing repo.
             let fetchRef = Self.shq(r.ref ?? "HEAD")
-            let fetchCommand = header.map { "git -C \(dest) -c http.extraheader=\(Self.shq($0)) fetch --depth 1 origin \(fetchRef)" }
-                ?? "git -C \(dest) fetch --depth 1 origin \(fetchRef)"
-            lines.append("if git -C \(dest) rev-parse --git-dir >/dev/null 2>&1; then")
+            let fetchCommand = header.map { "git -C \(dest) -c http.extraheader=\(Self.shq($0)) fetch --depth 1 \(Self.shq(effectiveURL)) \(fetchRef)" }
+                ?? "git -C \(dest) fetch --depth 1 \(Self.shq(effectiveURL)) \(fetchRef)"
+            lines.append("if [ -d \(dest)/.git ]; then")
             lines.append("  \(fetchCommand)")
             lines.append("  git -C \(dest) reset --hard FETCH_HEAD")
             lines.append("else")
             lines.append("  \(cloneCommand())")
             lines.append("fi")
+            // actions/checkout (with default token auth) wipes the tree it's given whenever
+            // `origin` doesn't already point at the bare `https://github.com/<owner>/<name>`
+            // it expects — no `.git` suffix, no ssh form. Normalise it so `clean: false` +
+            // the kept tree actually survives checkout instead of being deleted and re-cloned.
+            if let slug {
+                let checkoutURL = "https://github.com/\(slug.owner)/\(slug.name)"
+                lines.append("git -C \(dest) remote set-url origin \(Self.shq(checkoutURL))")
+            }
         } else {
             lines.append(cloneCommand())
         }
