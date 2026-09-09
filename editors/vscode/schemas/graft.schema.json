@@ -62,6 +62,20 @@
       }
     },
 
+    "ccache": {
+      "description": "Compiler cache for ObjC/C++ pods — brew install ccache + a path-independent config, filled by xcodebuild.",
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max-size": { "type": ["string", "number"], "description": "ccache max_size, e.g. \"40G\". A bare number is treated as gigabytes." }
+          }
+        }
+      ]
+    },
+
     "verify": { "type": "array", "items": { "type": "string" }, "description": "Assertions run at the end — each must exit 0 or the build fails." },
     "cleanup": {
       "description": "brew cleanup + clear non-warm caches at the end (smaller image). `true` preserves a default list of warm build caches (CocoaPods, ccache, DerivedData, SPM, Yarn/npm); the object form adds your own paths (relative to $HOME) to that list.",

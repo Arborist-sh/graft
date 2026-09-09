@@ -103,6 +103,7 @@ struct RecipeForm: Equatable {
     // via `grow --network`, never edited here; `mounts` has no builder UI either.
     var mounts: [Mount]?
     var network: VMNetwork?
+    var ccache: ImageRecipe.CcacheConfig?
 
     init() {}
 
@@ -152,6 +153,7 @@ struct RecipeForm: Equatable {
         os = r.os ?? .macOS; set(.os, r.os != nil)
         network = r.network              // carried verbatim; not a builder component
         mounts = r.mounts
+        ccache = r.ccache                // carried verbatim; not a builder component
         active = a
     }
 
@@ -184,7 +186,8 @@ struct RecipeForm: Equatable {
             disk: on(.vmShape) ? i(disk) : nil, display: on(.vmShape) ? s(display) : nil,
             run: on(.scripts) ? scripts.map(\.body).compactMap(s) : [],
             script: sv(.scriptFile, scriptFile), mounts: mounts, os: on(.os) ? os : nil,
-            network: network          // carried through; set per-host via `grow --network`
+            network: network,         // carried through; set per-host via `grow --network`
+            ccache: ccache            // carried through; not a builder component
         )
     }
 

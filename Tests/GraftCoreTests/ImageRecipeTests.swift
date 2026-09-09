@@ -559,4 +559,81 @@ struct ImageRecipeTests {
         #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/junk").path))
         #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/with space").path))
     }
+
+    @Test("ccache: true installs ccache, writes a path-independent config, and prints stats")
+    func ccacheEnabled() throws {
+        let json = #"{"name":"x","from":"b","ccache":true}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("brew install ccache"))
+        #expect(p.contains("$HOME/Library/Preferences/ccache/ccache.conf"))
+        #expect(p.contains("hash_dir = false"))
+        #expect(p.contains("base_dir = $HOME"))
+        #expect(p.contains("compression = false"))
+        #expect(p.contains("max_size = 20G"))
+        #expect(p.contains("ccache -s"))
+        // RN-superset tuning (see facebook/react-native's scripts/xcode/ccache.conf) — CocoaPods'
+        // CLANG_ENABLE_MODULES=YES and Xcode's -index-store-path/-ivfsoverlay need these to hit.
+        #expect(p.contains("depend_mode = true"))
+        #expect(p.contains("file_clone = true"))
+        #expect(p.contains("inode_cache = true"))
+        #expect(p.contains("sloppiness = clang_index_store,file_stat_matches,include_file_ctime,include_file_mtime,ivfsoverlay,pch_defines,modules,system_headers,time_macros"))
+        // A future "quoting fix" to `<<'EOF'` would land a literal, unexpanded `$HOME` in the
+        // config (ccache does not expand env vars) — guard the exact heredoc opener.
+        #expect(p.contains("<<EOF\n"))
+        #expect(!p.contains("<<'EOF'"))
+    }
+
+    @Test("ccache: { max-size } overrides the default cache size")
+    func ccacheMaxSize() throws {
+        let json = #"{"name":"x","from":"b","ccache":{"max-size":"40G"}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("max_size = 40G"))
+    }
+
+    @Test("ccache: false and an absent ccache emit nothing")
+    func ccacheDisabled() throws {
+        let disabled = try JSONDecoder().decode(ImageRecipe.self, from: Data(#"{"name":"x","from":"b","ccache":false}"#.utf8))
+        let absent = try JSONDecoder().decode(ImageRecipe.self, from: Data(#"{"name":"x","from":"b"}"#.utf8))
+        for r in [disabled, absent] {
+            let p = r.provisioning(scriptBody: nil)
+            #expect(p?.contains("ccache") != true)
+        }
+    }
+
+    @Test("ccache object form round-trips maxSize through JSON encode/decode")
+    func ccacheRoundTrip() throws {
+        let r = ImageRecipe(name: "x", from: "b", ccache: .init(maxSize: "40G"))
+        let data = try JSONEncoder().encode(r)
+        let decoded = try JSONDecoder().decode(ImageRecipe.self, from: data)
+        #expect(decoded.ccache?.maxSize == "40G")
+        #expect(decoded.ccache?.isEnabled == true)
+    }
+
+    @Test("ccache: false round-trips as the bare bool, not {max-size}")
+    func ccacheDisabledRoundTrip() throws {
+        let r = ImageRecipe(name: "x", from: "b", ccache: .init(isEnabled: false))
+        let data = try JSONEncoder().encode(r)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains(#""ccache":false"#))
+        #expect(!json.contains("max-size"))
+
+        let decoded = try JSONDecoder().decode(ImageRecipe.self, from: data)
+        #expect(decoded.ccache?.isEnabled == false)
+        #expect(decoded.provisioning(scriptBody: nil)?.contains("ccache") != true)
+    }
+
+    @Test("ccache: { max-size: 20 } (bare int, e.g. from JSON) coerces to gigabytes")
+    func ccacheMaxSizeNumeric() throws {
+        // Mirrors xcode:/node:'s numeric-tolerant decode: an unquoted int must not throw a
+        // typeMismatch for the whole recipe. JSON exercises this directly (a bare JSON number
+        // is never a String); YAML (via Yams) already stringifies bare scalars leniently, so
+        // this path matters most for `.graft` recipes authored/generated as JSON.
+        let json = #"{"name":"x","from":"b","ccache":{"max-size":20}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        #expect(r.ccache?.maxSize == "20G")
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("max_size = 20G"))
+    }
 }
