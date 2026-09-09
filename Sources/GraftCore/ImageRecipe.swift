@@ -64,11 +64,18 @@ public struct ImageRecipe: Codable, Sendable {
         public let ref: String?          // branch or tag (shallow clone; SHAs not supported here)
         public let run: [String]         // install commands, run in the clone to warm caches
         public let sshKey: String?       // guest path to an SSH key (e.g. a mounted one) for private clones
+        /// Opt in to keeping the cloned tree at a stable guest path instead of discarding it.
+        /// `"workspace"` resolves to the GitHub Actions runner's work folder for this repo
+        /// (`$HOME/actions-runner/_work/<name>/<name>`) so a bare `actions/checkout` lands on
+        /// top of the pre-warmed tree; any other value is used literally (a leading `~`
+        /// expands to `$HOME`). Rebaking an image with the tree already present refreshes it
+        /// (`git fetch` + `reset --hard`) rather than re-cloning.
+        public let path: String?
 
-        enum CodingKeys: String, CodingKey { case url, ref, run, sshKey = "ssh-key" }
+        enum CodingKeys: String, CodingKey { case url, ref, run, sshKey = "ssh-key", path }
 
-        public init(url: String, ref: String? = nil, run: [String] = [], sshKey: String? = nil) {
-            self.url = url; self.ref = ref; self.run = run; self.sshKey = sshKey
+        public init(url: String, ref: String? = nil, run: [String] = [], sshKey: String? = nil, path: String? = nil) {
+            self.url = url; self.ref = ref; self.run = run; self.sshKey = sshKey; self.path = path
         }
 
         public init(from decoder: Decoder) throws {
@@ -76,6 +83,7 @@ public struct ImageRecipe: Codable, Sendable {
             url = try c.decode(String.self, forKey: .url)
             ref = try c.decodeIfPresent(String.self, forKey: .ref)
             sshKey = try c.decodeIfPresent(String.self, forKey: .sshKey)
+            path = try c.decodeIfPresent(String.self, forKey: .path)
             if let single = try? c.decode(String.self, forKey: .run) {
                 run = [single]
             } else {
@@ -493,35 +501,103 @@ public struct ImageRecipe: Codable, Sendable {
         return (parts[0], parts[1])
     }
 
+    /// Resolve a `PrecacheRepo.path` value to the guest-shell path it should be kept at.
+    /// `"workspace"` maps to the Actions runner's work folder for the repo; anything else is
+    /// used literally, with a leading `~` rewritten to `$HOME`.
+    private static func resolvedRepoPath(_ path: String, url: String) -> String {
+        guard path != "workspace" else {
+            let name = githubSlug(from: url)?.name ?? repoNameFallback(from: url)
+            return "$HOME/actions-runner/_work/\(name)/\(name)"
+        }
+        if path.hasPrefix("~") {
+            return "$HOME" + path.dropFirst()
+        }
+        return path
+    }
+
+    /// Last path component of a clone URL, minus a trailing `.git` — used to name the
+    /// workspace dir for non-github hosts (`githubSlug` only understands github.com).
+    private static func repoNameFallback(from url: String) -> String {
+        var name = url.split(separator: "/").last.map(String.init) ?? url
+        if name.hasSuffix(".git") { name.removeLast(4) }
+        return name
+    }
+
+    /// Double-quote a value for interpolation into bash where `$HOME` (etc.) must still
+    /// expand — unlike `shq`, which single-quotes and therefore suppresses expansion.
+    private static func dq(_ s: String) -> String {
+        "\"" + s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "`", with: "\\`")
+            + "\""
+    }
+
     private static func repoStep(_ r: PrecacheRepo, token: String?) -> String {
-        var lines = ["echo \"==> Pre-caching \(r.url) (warm caches; source discarded)\""]
         // An explicit ssh-key wins; otherwise, if we have an App token for a github.com repo,
         // clone over HTTPS with it. Neither → anonymous (public repos).
         let slug = githubSlug(from: r.url)
         let useToken = token != nil && r.sshKey == nil && slug != nil
+        let keptPath = r.path.map { resolvedRepoPath($0, url: r.url) }
+
+        var lines = [keptPath.map { "echo \"==> Pre-caching \(r.url) (source kept at \($0))\"" }
+                      ?? "echo \"==> Pre-caching \(r.url) (warm caches; source discarded)\""]
         if let key = r.sshKey {
             lines.append("export GIT_SSH_COMMAND=\(shq("ssh -i \(key) -o IdentitiesOnly=yes"))")
         }
-        lines.append("_graft_pc=\"$(mktemp -d)\"")
-        let branch = r.ref.map { " --branch \(Self.shq($0))" } ?? ""
-        if useToken, let token, let slug {
-            // Inject the token as an http.extraheader via `git -c` (command-scoped — NOT written
-            // into the cloned repo's config), the same mechanism actions/checkout uses. The token
-            // is short-lived (~1h) and the working tree is discarded, so nothing auth-bearing bakes
-            // into the image. Reconstruct an https URL from the slug so an ssh-form url still works.
-            let header = "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
-            let url = "https://github.com/\(slug.owner)/\(slug.name).git"
-            lines.append("git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(url)) \"$_graft_pc\"")
+
+        // Where the clone lands: a throwaway mktemp dir by default, or the stable kept path.
+        let dest: String
+        if let keptPath {
+            dest = dq(keptPath)
+            lines.append("mkdir -p \"$(dirname \(dest))\"")   // git makes the leaf dir, not its parents
         } else {
-            lines.append("git clone --depth 1\(branch) \(Self.shq(r.url)) \"$_graft_pc\"")
+            lines.append("_graft_pc=\"$(mktemp -d)\"")
+            dest = "\"$_graft_pc\""
         }
+
+        let branch = r.ref.map { " --branch \(Self.shq($0))" } ?? ""
+        // Inject the App token as an http.extraheader via `git -c` (command-scoped — NOT written
+        // into the cloned repo's config), the same mechanism actions/checkout uses. The token
+        // is short-lived (~1h), so nothing auth-bearing bakes into the image even when the tree
+        // itself is kept. Reconstruct an https URL from the slug so an ssh-form url still works.
+        let header = { () -> String? in
+            guard useToken, let token else { return nil }
+            return "AUTHORIZATION: basic " + Data("x-access-token:\(token)".utf8).base64EncodedString()
+        }()
+        func cloneCommand() -> String {
+            if let header, let slug {
+                let url = "https://github.com/\(slug.owner)/\(slug.name).git"
+                return "git -c http.extraheader=\(Self.shq(header)) clone --depth 1\(branch) \(Self.shq(url)) \(dest)"
+            }
+            return "git clone --depth 1\(branch) \(Self.shq(r.url)) \(dest)"
+        }
+
+        if keptPath != nil {
+            // Rebaking on top of a previous sapling: if the tree is already a git repo there,
+            // refresh it in place instead of failing on a non-empty directory.
+            let fetchRef = Self.shq(r.ref ?? "HEAD")
+            let fetchCommand = header.map { "git -C \(dest) -c http.extraheader=\(Self.shq($0)) fetch --depth 1 origin \(fetchRef)" }
+                ?? "git -C \(dest) fetch --depth 1 origin \(fetchRef)"
+            lines.append("if git -C \(dest) rev-parse --git-dir >/dev/null 2>&1; then")
+            lines.append("  \(fetchCommand)")
+            lines.append("  git -C \(dest) reset --hard FETCH_HEAD")
+            lines.append("else")
+            lines.append("  \(cloneCommand())")
+            lines.append("fi")
+        } else {
+            lines.append(cloneCommand())
+        }
+
         if !r.run.isEmpty {
             lines.append("(")
-            lines.append("  cd \"$_graft_pc\"")
+            lines.append("  cd \(dest)")
             for cmd in r.run { lines.append("  \(cmd)") }
             lines.append(")")
         }
-        lines.append("rm -rf \"$_graft_pc\"")   // discard the working tree — keep only warmed $HOME caches
+        if keptPath == nil {
+            lines.append("rm -rf \"$_graft_pc\"")   // discard the working tree — keep only warmed $HOME caches
+        }
         if r.sshKey != nil { lines.append("unset GIT_SSH_COMMAND") }
         return lines.joined(separator: "\n")
     }
@@ -724,6 +800,8 @@ public struct ImageRecipe: Codable, Sendable {
         #   - url: https://github.com/me/app.git
         #     ref: main
         #     run: [yarn install --frozen-lockfile]
+        #     # path: workspace  # keep the tree at $HOME/actions-runner/_work/app/app instead
+        #                        # of discarding it, so node_modules/Pods bake too (see docs)
 
         # ── Verify + shrink ────────────────────────────────────────
         verify:

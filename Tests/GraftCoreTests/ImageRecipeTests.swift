@@ -252,6 +252,53 @@ struct ImageRecipeTests {
         #expect(!p.contains("http.extraheader"))
     }
 
+    @Test("repos: path: workspace keeps the tree at the runner's _work dir instead of discarding it")
+    func reposPathWorkspace() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(p.contains("mkdir -p \"$(dirname \"$HOME/actions-runner/_work/app/app\")\""))
+        #expect(p.contains("yarn install"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))   // tree is kept, not discarded
+        #expect(p.contains("source kept at"))
+    }
+
+    @Test("repos: path: ~/src/app expands the leading ~ to $HOME")
+    func reposPathLiteralTilde() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"~/src/app"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("$HOME/src/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
+    @Test("repos: with no path still discards the working tree (rm -rf)")
+    func reposDefaultStillDiscards() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("rm -rf \"$_graft_pc\""))
+        #expect(p.contains("warm caches; source discarded"))
+    }
+
+    @Test("repos: App token + path: workspace never leaks the raw token, still uses http.extraheader")
+    func reposAppTokenWithPath() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","ref":"main","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let token = "ghs_TESTTOKEN123"
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["https://github.com/org/app.git": token]))
+        let b64 = Data("x-access-token:\(token)".utf8).base64EncodedString()
+
+        #expect(p.contains("http.extraheader='AUTHORIZATION: basic \(b64)'"))
+        #expect(!p.contains(token))                      // raw token never written, only base64'd
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
     @Test("githubSlug parses owner/name from https + ssh urls, nil for other hosts")
     func githubSlug() {
         func slug(_ u: String) -> String? { ImageRecipe.githubSlug(from: u).map { "\($0.owner)/\($0.name)" } }
