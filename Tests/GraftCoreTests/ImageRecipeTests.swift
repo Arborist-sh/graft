@@ -303,4 +303,53 @@ struct ImageRecipeTests {
         #expect(r.node != nil)                          // template showcases declarative fields
         #expect(r.provisioning(scriptBody: nil) != nil) // and compiles to something runnable
     }
+
+    @Test("cleanup: true preserves warm build caches instead of wiping ~/Library/Caches")
+    func cleanupPreservesWarmCaches() throws {
+        let r = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":true}"#.utf8)
+        )
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(!p.contains(#"rm -rf "$HOME/Library/Caches""#))
+        #expect(!p.contains("rm -rf ~/Library/Caches"))
+        #expect(p.contains("Library/Caches/CocoaPods"))
+        #expect(p.contains("Library/Caches/ccache"))
+        #expect(p.contains("Library/Developer/Xcode/DerivedData"))
+    }
+
+    @Test("cleanup: { preserve: [...] } appends to the default preserve list and stays enabled")
+    func cleanupObjectFormAddsPreservePaths() throws {
+        let json = #"{"name":"x","from":"b","run":[],"cleanup":{"preserve":["Library/Caches/MyThing"]}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let cleanup = try #require(r.cleanup)
+
+        #expect(cleanup.isEnabled)
+        #expect(cleanup.preserve == ["Library/Caches/MyThing"])
+        #expect(cleanup.preservePaths.contains("Library/Caches/CocoaPods"))
+        #expect(cleanup.preservePaths.contains("Library/Caches/MyThing"))
+
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("MyThing"))
+        #expect(p.contains("CocoaPods"))
+    }
+
+    @Test("cleanup: false and an absent cleanup field both emit no cleanup step")
+    func cleanupDisabledOrAbsent() throws {
+        let disabled = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":false}"#.utf8)
+        )
+        #expect(disabled.cleanupSteps.isEmpty)
+        #expect(disabled.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+
+        let absent = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[]}"#.utf8)
+        )
+        #expect(absent.cleanup == nil)
+        #expect(absent.cleanupSteps.isEmpty)
+        #expect(absent.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+    }
 }

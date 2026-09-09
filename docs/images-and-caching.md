@@ -93,7 +93,17 @@ template` for a starter, or hover any field in the VS Code extension.
 | `prefetch` | string[] | commands run in the `repo` mount dir (bundle/yarn/pod install → baked in) |
 | `repos` | list | clone repos into the guest, warm global caches, discard the source (see below) |
 | `verify` | string[] | each must exit 0 at the end, or the build fails |
-| `cleanup` | boolean | `brew cleanup` + clear caches → smaller image |
+| `cleanup` | boolean or object | `brew cleanup` + clear non-warm caches → smaller image (see below) |
+
+`cleanup: true` shrinks the image but never undoes the cache warming above: it clears
+`~/Library/Caches/*` except a default preserve list — CocoaPods, ccache, Xcode
+DerivedData, Swift Package Manager, and Yarn/npm — plus `brew cleanup -s` and Homebrew's
+download cache. Add your own paths (relative to `$HOME`) with the object form:
+
+```yaml
+cleanup:
+  preserve: [Library/Caches/MyThing]
+```
 
 **VM shape** (via `tart set`, inherited by every clone):
 
