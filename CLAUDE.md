@@ -148,13 +148,15 @@ gh release view vX.Y.Z --repo arborist-sh/graft --json assets   # verify it's at
 
 ### 5. Bump the Homebrew formula (CLI)
 
-Tap repo: `arborist-sh/homebrew-tap`, formula `Formula/graft.rb`. Update **four** fields,
-via a PR (tap `main` is not protected, so it can be squash-merged once green):
+Tap repo: `arborist-sh/homebrew-tap`, formula `Formula/graft.rb`. Update **three** fields,
+via a PR (tap `main` is not protected, so it can be squash-merged once green). There is no
+`version` line — brew derives it from the `url`:
 
 - `url` → the vX.Y.Z tarball URL
 - `sha256` → the checksum from step 4
-- `version` → X.Y.Z
 - the test `assert_match "X.Y.Z", …`
+
+`brew audit --strict arborist-sh/tap/graft` and `brew style` should both come back clean.
 
 Verify end to end: `brew update && brew upgrade graft && graft --version`.
 
@@ -197,5 +199,8 @@ needs no edit). Verify: `brew update && brew audit --cask --online arborist-sh/t
   may report the *dev* build, not the freshly-installed brew one. Run `scripts/dev-link.sh
   restore` to point it back at the Cellar (then re-run `dev-link.sh` if you want dev mode
   again). Check with `ls -l "$(which graft)"`.
-- `brew style Formula/graft.rb` flags two pre-existing ordering nits (version-before-sha256,
-  dependency order). Harmless; `brew style --fix` if you want them gone.
+- **The formula does not depend on `cirruslabs/cli/tart` on purpose** (GFT-38). Homebrew 6
+  disabled the `depends_on :macos => :ventura` form the cirruslabs tap's `tart`/`softnet`
+  formulas use, and a hard dependency took `brew install graft` down with them. tart is a
+  documented prerequisite (formula caveats + README) and the CLI preflights for it with an
+  install hint (`Tart.ensureInstalled`). Don't re-add the dependency.
