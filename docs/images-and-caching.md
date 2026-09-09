@@ -164,6 +164,56 @@ defaults to a *project-local* `.yarn/cache` (discarded with the source). Force a
 cache with `env: { YARN_ENABLE_GLOBAL_CACHE: "true" }` (or use yarn classic / bundler's
 default global gem dir / CocoaPods' global CDN cache, which already qualify).
 
+### Keeping the tree (`path:`)
+
+The default (above) discards the clone, so `node_modules`, `Pods/`, and Xcode
+`DerivedData` still start cold in the job — `DerivedData` in particular is keyed by a
+*hash of the project's path*, and a discarded-then-recloned tree never lands at the same
+path twice. Set `path:` on a repo to keep the clone at a **stable** guest path instead of
+`rm -rf`-ing it, so those path-keyed caches bake straight into the image:
+
+```yaml
+repos:
+  - url: git@github.com:your-org/app.git
+    ref: main
+    ssh-key: "/Volumes/My Shared Files/ssh/id_ed25519"
+    path: workspace                       # keep the tree instead of discarding it
+    run:
+      - yarn install
+      - cd ios && bundle exec pod install
+      - cd ios && xcodebuild -workspace App.xcworkspace -scheme App build   # warms DerivedData at this path
+```
+
+`path: workspace` resolves to the exact directory `actions/checkout` will use in a job —
+`$HOME/actions-runner/_work/<repo>/<repo>` — so the checkout step lands *on top of* the
+baked tree instead of somewhere else, and DerivedData's path hash matches. Any other
+value is used literally (a leading `~` expands to `$HOME`) if you'd rather pin a custom
+location. Rebaking an image (e.g. a nightly rebuild) refreshes an existing kept tree with
+`git fetch` + `reset --hard` rather than re-cloning from scratch.
+
+Two workflow adjustments are required for the kept tree to actually help:
+
+- **`actions/checkout` needs `clean: false`.** Its default behavior runs
+  `git clean -ffdx` before checking out, which deletes anything not tracked by git —
+  including `node_modules`, `Pods/`, and `.yarn/` — wiping out exactly what you baked.
+- **Skip `pod install` when `Podfile.lock` is unchanged.** CocoaPods' install is not
+  idempotent-cheap the way `yarn install` is; if `ios/Podfile.lock` matches what's
+  already in the baked `Pods/`, skip the step entirely rather than re-running it.
+
+For a github.com repo, graft also normalises the kept clone's `origin` to the bare
+`https://github.com/<owner>/<name>` (no `.git`) that `actions/checkout` expects when the
+job uses its default token-based auth — otherwise checkout sees a mismatched `origin`
+(whatever form you cloned with — ssh, `.git`-suffixed https, etc.) and wipes the
+directory before re-cloning cold, even with `clean: false`. If your workflow instead
+passes checkout its own `ssh-key:` input, it expects `origin` in the `git@github.com:` scp
+form instead, which graft's normalisation doesn't match — in that case, point `path:` at a
+literal path and accept a re-clone each run, or don't pass checkout an `ssh-key:` input.
+
+**Tradeoff:** with `path:` set, the repo's *source* is now baked into the image, not just
+its caches. That's fine for a private runner pool, but matters if the image is ever
+pushed to Orchard or another registry — anyone who can pull the image can read the
+source. Don't use `path:` on an image you intend to share or publish.
+
 ## Why baking caches is (almost) free: APFS copy-on-write
 
 `tart clone` uses **APFS `clonefile`** — the clone's disk shares the *same physical

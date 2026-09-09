@@ -252,6 +252,112 @@ struct ImageRecipeTests {
         #expect(!p.contains("http.extraheader"))
     }
 
+    @Test("repos: path: workspace keeps the tree at the runner's _work dir instead of discarding it")
+    func reposPathWorkspace() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(p.contains("mkdir -p \"$(dirname \(dest))\""))
+        #expect(p.contains("if [ -d \(dest)/.git ]; then"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'https://github.com/me/app.git' 'HEAD'"))
+        #expect(p.contains("git -C \(dest) reset --hard FETCH_HEAD"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/me/app'"))
+        #expect(p.contains("yarn install"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))   // tree is kept, not discarded
+        #expect(p.contains("source kept at"))
+    }
+
+    @Test("repos: path: ~/src/app expands the leading ~ to $HOME")
+    func reposPathLiteralTilde() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"],"path":"~/src/app"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("$HOME/src/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
+    @Test("repos: path: ~bob/src is NOT tilde-expanded (only a bare ~ or ~/ is)")
+    func reposPathTildeUser() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["echo hi"],"path":"~bob/src"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("\"~bob/src\""))
+        #expect(!p.contains("$HOMEbob"))
+    }
+
+    @Test("repos: with no path still discards the working tree (rm -rf)")
+    func reposDefaultStillDiscards() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/me/app.git","run":["yarn install"]}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("rm -rf \"$_graft_pc\""))
+        #expect(p.contains("warm caches; source discarded"))
+        #expect(!p.contains("remote set-url origin"))   // default (discard) leg never touches origin
+    }
+
+    @Test("repos: App token + path: workspace never leaks the raw token, still uses http.extraheader on both clone and fetch")
+    func reposAppTokenWithPath() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","ref":"main","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let token = "ghs_TESTTOKEN123"
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["https://github.com/org/app.git": token]))
+        let b64 = Data("x-access-token:\(token)".utf8).base64EncodedString()
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+        let header = "http.extraheader='AUTHORIZATION: basic \(b64)'"
+
+        #expect(p.contains("git -c \(header) clone --depth 1 --branch 'main' 'https://github.com/org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) -c \(header) fetch --depth 1 'https://github.com/org/app.git' 'main'"))
+        #expect(p.contains("git -C \(dest) reset --hard FETCH_HEAD"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+        #expect(!p.contains(token))                      // raw token never written, only base64'd
+        #expect(p.contains("$HOME/actions-runner/_work/app/app"))
+        #expect(!p.contains("rm -rf \"$_graft_pc\""))
+    }
+
+    @Test("repos: path: + ssh-key normalises origin to https but fetches over the original ssh URL")
+    func reposPathSSHKey() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"git@github.com:org/app.git","ssh-key":"/Volumes/My Shared Files/id","ref":"main","run":["yarn install"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil, repoTokens: ["git@github.com:org/app.git": "tok"]))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("git clone --depth 1 --branch 'main' 'git@github.com:org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'git@github.com:org/app.git' 'main'"))
+        #expect(!p.contains("http.extraheader"))         // ssh-key path never takes the token branch
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+    }
+
+    @Test("repos: path: workspace for a non-github scp URL resolves the workspace name and never rewrites origin")
+    func reposPathNonGithubWorkspaceName() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"git@gitlab.com:org/app.git","run":["echo hi"],"path":"workspace"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"$HOME/actions-runner/_work/app/app\""
+
+        #expect(p.contains("git clone --depth 1 'git@gitlab.com:org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'git@gitlab.com:org/app.git' 'HEAD'"))
+        #expect(!p.contains("remote set-url origin"))    // only normalised for github.com URLs
+    }
+
+    @Test("repos: path: with a literal space keeps every quoted form intact")
+    func reposPathLiteralWithSpace() throws {
+        let json = #"{"name":"x","from":"b","repos":[{"url":"https://github.com/org/app.git","run":["echo hi"],"path":"a path with space"}]}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        let dest = "\"a path with space\""
+
+        #expect(p.contains("if [ -d \(dest)/.git ]; then"))
+        #expect(p.contains("git -C \(dest) fetch --depth 1 'https://github.com/org/app.git' 'HEAD'"))
+        #expect(p.contains("git clone --depth 1 'https://github.com/org/app.git' \(dest)"))
+        #expect(p.contains("git -C \(dest) remote set-url origin 'https://github.com/org/app'"))
+    }
+
     @Test("githubSlug parses owner/name from https + ssh urls, nil for other hosts")
     func githubSlug() {
         func slug(_ u: String) -> String? { ImageRecipe.githubSlug(from: u).map { "\($0.owner)/\($0.name)" } }
@@ -261,6 +367,7 @@ struct ImageRecipeTests {
         #expect(slug("ssh://git@github.com/org/app.git") == "org/app")
         #expect(slug("https://gitlab.com/org/app.git") == nil)
         #expect(slug("not a url") == nil)
+        #expect(slug("https://github.com/org/app.git/") == "org/app")   // trailing slash before the .git check
     }
 
     @Test("parses VM network specs and decodes them from a recipe")
