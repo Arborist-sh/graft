@@ -61,7 +61,8 @@ repos:
       - yarn install --frozen-lockfile
       - cd ios && bundle exec pod install
       - cd ios && xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator \
-          -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+          -configuration Debug -destination 'generic/platform=iOS Simulator' \
+          -derivedDataPath build build CODE_SIGNING_ALLOWED=NO
       - shasum -a 256 ios/Podfile.lock | awk '{print $1}' > "$HOME/.rn-ios-baked-podfile-lock-sha256"
 
 ccache: true                     # floor under DerivedData for ObjC/C++ pods
@@ -72,6 +73,12 @@ directory `actions/checkout` writes to — so the job's checkout lands on top of
 tree instead of next to it, and DerivedData's path-keyed cache actually applies. The
 `shasum` line bakes a marker of the Podfile.lock this image was built against, which the
 workflow below uses to decide whether `pod install` needs to run at all.
+
+`-derivedDataPath build` keeps DerivedData inside the tree (`ios/build`, already in React
+Native's default `.gitignore`) instead of under `~/Library/Developer/Xcode/DerivedData/<Name>-<path-hash>`.
+That does two things: the warm build travels with the kept tree regardless of DerivedData's
+path hash, and the `-I`/`-F` search paths into `Build/Products` sit under ccache's `base_dir`,
+so its path rewriting covers them. Use the same flag at bake time and in the job.
 
 **Baked source, not just caches.** With `path:` set, the app's source lives in the image,
 not just its dependency caches — fine for a private runner pool, not something to publish.
@@ -111,7 +118,8 @@ jobs:
         run: |
           cd ios
           xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator \
-            -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build build CODE_SIGNING_ALLOWED=NO
 
       - name: ccache stats
         run: ccache -s
@@ -125,8 +133,12 @@ bake time* is the check that's actually true across ephemeral VMs: it answers "d
 job's lockfile match what this image's `Pods/` was built against", which is the only
 question that matters here.
 
-The one line you own in your own repo, not in the image: React Native's post-install
-hook needs `:ccache_enabled => true` for ccache to actually see any compiles —
+Two things you own in your own repo, not in the image. React Native's post-install hook
+needs `:ccache_enabled => true` for ccache to see any compiles at all, and RN's ccache
+wrapper must be pointed at graft's config: the wrapper sets `CCACHE_CONFIGPATH` to RN's own
+bundled file unless it is already set, and ccache reads only that one file, so without the
+build setting below graft's `base_dir`/`hash_dir` tuning is never read and the bake-time
+fill misses at job time. graft's config is a superset of RN's, so nothing regresses.
 
 ```ruby
 # ios/Podfile
@@ -136,6 +148,12 @@ react_native_post_install(
   :mac_catalyst_enabled => false,
   :ccache_enabled => true
 )
+
+installer.pods_project.targets.each do |target|
+  target.build_configurations.each do |config|
+    config.build_settings['CCACHE_CONFIGPATH'] = "#{ENV['HOME']}/Library/Preferences/ccache/ccache.conf"
+  end
+end
 ```
 
 ## Tradeoffs and gotchas

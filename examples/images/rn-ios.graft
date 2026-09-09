@@ -34,7 +34,9 @@ repos:
     run:
       - yarn install --frozen-lockfile
       - cd ios && bundle exec pod install
-      - cd ios && xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+      # -derivedDataPath build keeps DerivedData inside the tree (ios/build) so it travels
+      # with the checkout and ccache's path rewriting covers it; use the same flag in the job.
+      - cd ios && xcodebuild -workspace App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build build CODE_SIGNING_ALLOWED=NO
       # marker the job compares against to decide whether pod install is needed at all
       - shasum -a 256 ios/Podfile.lock | awk '{print $1}' > "$HOME/.rn-ios-baked-podfile-lock-sha256"
 
