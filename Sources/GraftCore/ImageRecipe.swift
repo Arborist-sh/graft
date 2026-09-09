@@ -52,6 +52,7 @@ public struct ImageRecipe: Codable, Sendable {
     public let podRepoWarm: Bool?        // pod repo update / setup
     public let prefetch: [String]?       // cache-warming commands, run in the repo mount dir
     public let repos: [PrecacheRepo]?    // clone a repo into the guest, warm caches, discard source
+    public let ccache: CcacheConfig?     // brew install ccache + path-independent config, filled by xcodebuild during the bake
 
     /// A repo to clone into the build guest purely to warm global package-manager caches
     /// (yarn/CocoaPods/bundler/SPM). The working tree is **discarded** after `run` — only
@@ -128,7 +129,7 @@ public struct ImageRecipe: Codable, Sendable {
         verify: [String]? = nil, cleanup: Bool? = nil,
         cpu: Int? = nil, memory: Int? = nil, disk: Int? = nil, display: String? = nil,
         run: [String] = [], script: String? = nil, mounts: [Mount]? = nil, os: GuestOS? = nil,
-        network: VMNetwork? = nil
+        network: VMNetwork? = nil, ccache: CcacheConfig? = nil
     ) {
         self.name = name; self.from = from
         self.xcode = xcode; self.node = node; self.ruby = ruby; self.python = python
@@ -146,6 +147,7 @@ public struct ImageRecipe: Codable, Sendable {
         self.cpu = cpu; self.memory = memory; self.disk = disk; self.display = display
         self.run = run; self.script = script; self.mounts = mounts; self.os = os
         self.network = network
+        self.ccache = ccache
     }
 
     public var guestOS: GuestOS { os ?? .macOS }
@@ -153,7 +155,7 @@ public struct ImageRecipe: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case name, from, xcode, node, ruby, python, java, go, rust, brew, cocoapods, fastlane
         case gems, npm, env, git, write, timezone, hostname, description, labels, prefetch
-        case verify, cleanup, cpu, memory, disk, display, script, run, mounts, os, network, repos
+        case verify, cleanup, cpu, memory, disk, display, script, run, mounts, os, network, repos, ccache
         case packageManager = "package-manager"
         case xcodeFirstLaunch = "xcode-first-launch"
         case simulatorRuntimes = "simulator-runtimes"
@@ -213,6 +215,7 @@ public struct ImageRecipe: Codable, Sendable {
         mounts = try c.decodeIfPresent([Mount].self, forKey: .mounts)
         os = try c.decodeIfPresent(GuestOS.self, forKey: .os)
         network = try c.decodeIfPresent(VMNetwork.self, forKey: .network)
+        ccache = try c.decodeIfPresent(CcacheConfig.self, forKey: .ccache)
     }
 
     /// Clean YAML serialization for the GUI's structured editor: omit nil/empty fields so a
@@ -262,6 +265,7 @@ public struct ImageRecipe: Codable, Sendable {
         if let mounts, !mounts.isEmpty { try c.encode(mounts, forKey: .mounts) }
         try c.encodeIfPresent(os, forKey: .os)
         try c.encodeIfPresent(network, forKey: .network)
+        try c.encodeIfPresent(ccache, forKey: .ccache)
     }
 
     private func encodeNonEmpty(_ c: inout KeyedEncodingContainer<CodingKeys>, _ value: [String]?, _ key: CodingKeys) throws {
@@ -308,6 +312,7 @@ public struct ImageRecipe: Codable, Sendable {
         work.append(contentsOf: run)
         work.append(contentsOf: prefetchSteps)
         work.append(contentsOf: repoPrecacheSteps(tokens: repoTokens))
+        work.append(contentsOf: ccacheStatsSteps)
         work.append(contentsOf: verifySteps)
         work.append(contentsOf: cleanupSteps)
         guard !work.isEmpty else { return nil }   // nothing to provision
@@ -371,6 +376,7 @@ public struct ImageRecipe: Codable, Sendable {
             let list = brew.joined(separator: " ")
             steps.append("echo \"==> brew install \(list)\"\nbrew install \(list)")
         }
+        if let ccache, ccache.isEnabled { steps.append(Self.ccacheStep(ccache)) }
         if let cocoapods {
             steps.append("echo \"==> CocoaPods \(cocoapods)\"\ngem install cocoapods -v \(cocoapods) --no-document")
         }
@@ -526,6 +532,14 @@ public struct ImageRecipe: Codable, Sendable {
         return lines.joined(separator: "\n")
     }
 
+    /// Print ccache's hit-rate stats at the end of the prefetch/repos phase — this is where
+    /// a warm `xcodebuild` (from `prefetch:`/`repos:`) would have filled the store, so the
+    /// bake log shows the fill.
+    var ccacheStatsSteps: [String] {
+        guard let ccache, ccache.isEnabled else { return [] }
+        return ["echo \"==> ccache stats\"; ccache -s || true"]
+    }
+
     var verifySteps: [String] {
         guard let verify, !verify.isEmpty else { return [] }
         var lines = ["echo \"==> Verifying image\""]
@@ -644,6 +658,33 @@ public struct ImageRecipe: Codable, Sendable {
         return lines.joined(separator: "\n")
     }
 
+    /// Install ccache + write a path-independent config to its macOS default location
+    /// (`$HOME/Library/Preferences/ccache/ccache.conf` — no `CCACHE_CONFIGPATH` needed at
+    /// job time). `base_dir` + `hash_dir = false` make hits path-independent between the
+    /// bake path and the job's `~/actions-runner/_work/...` path; `compiler_check = content`
+    /// keeps Xcode point updates from silently invalidating everything; `compression = false`
+    /// removes the only compute a hit costs (disk is cheap on an APFS clone). `cache_dir` is
+    /// set explicitly to `$HOME/Library/Caches/ccache` so the store location is deterministic
+    /// for a sibling ticket's cleanup preserve list. We do NOT export CC/CXX globally here —
+    /// xcodebuild ignores them; wiring ccache into a build is the Podfile's job (RN's
+    /// `react_native_post_install(installer, ..., :ccache_enabled => true)`).
+    private static func ccacheStep(_ cfg: CcacheConfig) -> String {
+        """
+        echo "==> ccache"
+        brew list ccache >/dev/null 2>&1 || brew install ccache
+        mkdir -p "$HOME/Library/Preferences/ccache"
+        cat > "$HOME/Library/Preferences/ccache/ccache.conf" <<EOF
+        cache_dir = $HOME/Library/Caches/ccache
+        max_size = \(cfg.maxSize)
+        base_dir = $HOME
+        hash_dir = false
+        compiler_check = content
+        compression = false
+        sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime
+        EOF
+        """
+    }
+
     private static func writeFileStep(path: String, contents: String) -> String {
         """
         echo "==> Writing \(path)"
@@ -724,6 +765,7 @@ public struct ImageRecipe: Codable, Sendable {
         #   - url: https://github.com/me/app.git
         #     ref: main
         #     run: [yarn install --frozen-lockfile]
+        # ccache: true              # compiler cache for ObjC/C++ pods — the floor under DerivedData
 
         # ── Verify + shrink ────────────────────────────────────────
         verify:
@@ -735,5 +777,39 @@ public struct ImageRecipe: Codable, Sendable {
         # run: |
         #   echo custom step
         """
+    }
+
+    /// `ccache:` — ships ccache installed and configured for path-independent hits, filled
+    /// by whatever `xcodebuild` runs during the bake (the floor under DerivedData: a
+    /// content-addressed, per-translation-unit store that still hits when DerivedData is
+    /// discarded). Accepts either `ccache: true` or `ccache: { max-size: "20G" }`.
+    public struct CcacheConfig: Codable, Sendable, Equatable {
+        public let isEnabled: Bool
+        public let maxSize: String
+
+        public static let defaultMaxSize = "20G"
+
+        public init(isEnabled: Bool = true, maxSize: String = CcacheConfig.defaultMaxSize) {
+            self.isEnabled = isEnabled
+            self.maxSize = maxSize
+        }
+
+        enum CodingKeys: String, CodingKey { case maxSize = "max-size" }
+
+        public init(from decoder: Decoder) throws {
+            if let enabled = try? decoder.singleValueContainer().decode(Bool.self) {
+                isEnabled = enabled
+                maxSize = Self.defaultMaxSize
+                return
+            }
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            isEnabled = true
+            maxSize = try c.decodeIfPresent(String.self, forKey: .maxSize) ?? Self.defaultMaxSize
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(maxSize, forKey: .maxSize)
+        }
     }
 }

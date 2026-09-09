@@ -92,6 +92,7 @@ template` for a starter, or hover any field in the VS Code extension.
 | `pod-repo-warm` | boolean | `pod repo update` / `pod setup` |
 | `prefetch` | string[] | commands run in the `repo` mount dir (bundle/yarn/pod install → baked in) |
 | `repos` | list | clone repos into the guest, warm global caches, discard the source (see below) |
+| `ccache` | boolean \| `{max-size}` | `brew install ccache` + a path-independent config, filled by `xcodebuild` (see below) |
 | `verify` | string[] | each must exit 0 at the end, or the build fails |
 | `cleanup` | boolean | `brew cleanup` + clear caches → smaller image |
 
@@ -149,6 +150,64 @@ baked — and point `ssh-key` at the mounted path. (Public repos need neither.)
 defaults to a *project-local* `.yarn/cache` (discarded with the source). Force a global
 cache with `env: { YARN_ENABLE_GLOBAL_CACHE: "true" }` (or use yarn classic / bundler's
 default global gem dir / CocoaPods' global CDN cache, which already qualify).
+
+### Compiler cache (`ccache:`)
+
+`repos:`/`prefetch:` warm caches keyed to a *path* — Xcode's DerivedData is fast but
+fragile: it's invalidated wholesale (a scheme change, a clean build, a bump in Xcode)
+and it's keyed to where the build ran, so a bake-time path doesn't help a job's
+`~/actions-runner/_work/<repo>/<repo>` checkout. `ccache:` is the floor under that: a
+content-addressed object store, cached **per translation unit**, on the image disk —
+so every ObjC/C++ pod is still a hit even when DerivedData gets thrown away. **It does
+not cover Swift** — Xcode's own incremental build (via DerivedData) is what makes Swift
+fast; ccache only ever sees the ObjC/C++ compiler invocations React Native's pods emit
+(and any C/C++/Objective-C++ of your own).
+
+```yaml
+ccache: true            # or: ccache: { max-size: "40G" }   (default 20G)
+```
+
+When enabled, graft (after `brew:` packages install):
+
+- `brew install ccache` (idempotent)
+- writes ccache's macOS default config, `$HOME/Library/Preferences/ccache/ccache.conf`:
+
+  ```
+  cache_dir = $HOME/Library/Caches/ccache
+  max_size = 20G
+  base_dir = $HOME
+  hash_dir = false
+  compiler_check = content
+  compression = false
+  sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime
+  ```
+
+  `base_dir` + `hash_dir = false` make cache hits **path-independent** — a hit from the
+  bake path still hits at the job's `_work/...` path. `compiler_check = content` means
+  an Xcode point update doesn't silently invalidate the whole store (it hashes the
+  actual compiler, not its mtime/path). `compression = false` trades a little disk for
+  removing the only compute cost a cache *hit* has — and disk is cheap on an APFS clone.
+  `cache_dir` is pinned to `~/Library/Caches/ccache` so the store's location is
+  deterministic (don't pair `ccache:` with `cleanup: true`, which clears
+  `~/Library/Caches` — same caveat as `repos:`/CocoaPods/Yarn caches above).
+
+- at the end of the `prefetch`/`repos` phase — after a warm `pod install && xcodebuild`
+  would have filled the store — runs `ccache -s` so the bake log shows the fill.
+
+**graft does not export `CC`/`CXX`** — `xcodebuild` ignores them; wiring ccache into
+your build is a one-line Podfile change you own, via React Native's post-install hook:
+
+```ruby
+react_native_post_install(
+  installer,
+  config[:reactNativePath],
+  :mac_catalyst_enabled => false,
+  :ccache_enabled => true
+)
+```
+
+To read the hit rate from a job, add `ccache -s` as a step after the build — a healthy
+warm image should show most ObjC/C++ compiles as cache hits.
 
 ## Why baking caches is (almost) free: APFS copy-on-write
 

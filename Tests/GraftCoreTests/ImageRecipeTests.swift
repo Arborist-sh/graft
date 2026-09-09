@@ -303,4 +303,45 @@ struct ImageRecipeTests {
         #expect(r.node != nil)                          // template showcases declarative fields
         #expect(r.provisioning(scriptBody: nil) != nil) // and compiles to something runnable
     }
+
+    @Test("ccache: true installs ccache, writes a path-independent config, and prints stats")
+    func ccacheEnabled() throws {
+        let json = #"{"name":"x","from":"b","ccache":true}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("brew install ccache"))
+        #expect(p.contains("$HOME/Library/Preferences/ccache/ccache.conf"))
+        #expect(p.contains("hash_dir = false"))
+        #expect(p.contains("base_dir = $HOME"))
+        #expect(p.contains("compression = false"))
+        #expect(p.contains("max_size = 20G"))
+        #expect(p.contains("ccache -s"))
+    }
+
+    @Test("ccache: { max-size } overrides the default cache size")
+    func ccacheMaxSize() throws {
+        let json = #"{"name":"x","from":"b","ccache":{"max-size":"40G"}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("max_size = 40G"))
+    }
+
+    @Test("ccache: false and an absent ccache emit nothing")
+    func ccacheDisabled() throws {
+        let disabled = try JSONDecoder().decode(ImageRecipe.self, from: Data(#"{"name":"x","from":"b","ccache":false}"#.utf8))
+        let absent = try JSONDecoder().decode(ImageRecipe.self, from: Data(#"{"name":"x","from":"b"}"#.utf8))
+        for r in [disabled, absent] {
+            let p = r.provisioning(scriptBody: nil)
+            #expect(p?.contains("ccache") != true)
+        }
+    }
+
+    @Test("ccache object form round-trips maxSize through JSON encode/decode")
+    func ccacheRoundTrip() throws {
+        let r = ImageRecipe(name: "x", from: "b", ccache: .init(maxSize: "40G"))
+        let data = try JSONEncoder().encode(r)
+        let decoded = try JSONDecoder().decode(ImageRecipe.self, from: data)
+        #expect(decoded.ccache?.maxSize == "40G")
+        #expect(decoded.ccache?.isEnabled == true)
+    }
 }
