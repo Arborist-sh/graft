@@ -303,4 +303,153 @@ struct ImageRecipeTests {
         #expect(r.node != nil)                          // template showcases declarative fields
         #expect(r.provisioning(scriptBody: nil) != nil) // and compiles to something runnable
     }
+
+    @Test("cleanup: true preserves warm build caches instead of wiping ~/Library/Caches")
+    func cleanupPreservesWarmCaches() throws {
+        let r = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":true}"#.utf8)
+        )
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(!p.contains(#"rm -rf "$HOME/Library/Caches""#))
+        #expect(!p.contains("rm -rf ~/Library/Caches"))
+        // Pin the actual mechanism (a quoted case-pattern skip list), not just that the
+        // names appear somewhere in the script — a wholesale `rm -rf` followed by an
+        // unrelated echo of these names would satisfy a looser assertion.
+        #expect(p.contains("'CocoaPods'|'Yarn'|'ccache'|'org.swift.swiftpm') continue ;;"))
+        #expect(p.contains("Library/Developer/Xcode/DerivedData"))
+    }
+
+    @Test("cleanup: { preserve: [...] } appends to the default preserve list and stays enabled")
+    func cleanupObjectFormAddsPreservePaths() throws {
+        let json = #"{"name":"x","from":"b","run":[],"cleanup":{"preserve":["Library/Caches/MyThing"]}}"#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let cleanup = try #require(r.cleanup)
+
+        #expect(cleanup.isEnabled)
+        #expect(cleanup.preserve == ["Library/Caches/MyThing"])
+        #expect(cleanup.preservePaths.contains("Library/Caches/CocoaPods"))
+        #expect(cleanup.preservePaths.contains("Library/Caches/MyThing"))
+
+        let p = try #require(r.provisioning(scriptBody: nil))
+        // The custom entry must land as its own quoted case alternative, alongside the
+        // defaults — not merely appear in the echoed "preserving" message.
+        #expect(p.contains("'CocoaPods'|'MyThing'|'Yarn'|'ccache'|'org.swift.swiftpm') continue ;;"))
+    }
+
+    @Test("cleanup: false and an absent cleanup field both emit no cleanup step")
+    func cleanupDisabledOrAbsent() throws {
+        let disabled = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":false}"#.utf8)
+        )
+        #expect(disabled.cleanupSteps.isEmpty)
+        #expect(disabled.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+
+        let absent = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[]}"#.utf8)
+        )
+        #expect(absent.cleanup == nil)
+        #expect(absent.cleanupSteps.isEmpty)
+        #expect(absent.provisioning(scriptBody: nil)?.contains("Cleanup") != true)
+    }
+
+    @Test("preserve entries containing bash-hostile characters are quoted as exact literals")
+    func cleanupQuotesHostilePreserveEntries() throws {
+        let json = #"""
+        {"name":"x","from":"b","run":[],
+         "cleanup":{"preserve":["Library/Caches/Google Chrome","Library/Caches/O'Reilly","Library/Caches/*.tmp"]}}
+        """#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let p = try #require(r.provisioning(scriptBody: nil))
+
+        #expect(p.contains("'Google Chrome'"))               // space stays inside one literal
+        #expect(p.contains(#"'O'\''Reilly'"#))                // embedded ' escaped bash-style
+        #expect(p.contains("'*.tmp'"))                        // glob metachar quoted, not expanded
+    }
+
+    @Test("preserve paths normalise a leading ~/, ./, or $HOME/ and reject absolute paths")
+    func cleanupNormalisesPreservePaths() throws {
+        let json = #"""
+        {"name":"x","from":"b","run":[],
+         "cleanup":{"preserve":["~/Library/Caches/Tilde","./Library/Caches/Dot","$HOME/Library/Caches/HomeVar"]}}
+        """#
+        let r = try JSONDecoder().decode(ImageRecipe.self, from: Data(json.utf8))
+        let cleanup = try #require(r.cleanup)
+        #expect(cleanup.preserve == ["Library/Caches/Tilde", "Library/Caches/Dot", "Library/Caches/HomeVar"])
+
+        let p = try #require(r.provisioning(scriptBody: nil))
+        #expect(p.contains("'Tilde'"))
+        #expect(p.contains("'Dot'"))
+        #expect(p.contains("'HomeVar'"))
+
+        let absoluteJSON = #"{"name":"x","from":"b","run":[],"cleanup":{"preserve":["/etc/passwd"]}}"#
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ImageRecipe.self, from: Data(absoluteJSON.utf8))
+        }
+    }
+
+    @Test("encoding CleanupConfig(enabled: false, preserve: [...]) emits the bare bool, and round-trips disabled")
+    func cleanupDisabledEncodesAsBareBoolEvenWithPreserve() throws {
+        let config = ImageRecipe.CleanupConfig(enabled: false, preserve: ["Library/Caches/Kept"])
+        let data = try JSONEncoder().encode(config)
+        #expect(String(decoding: data, as: UTF8.self) == "false")
+
+        let roundTripped = try JSONDecoder().decode(ImageRecipe.CleanupConfig.self, from: data)
+        #expect(roundTripped.isEnabled == false)
+        #expect(roundTripped.preserve.isEmpty)   // the bare-bool form carries no preserve list
+    }
+
+    @Test("the cleanup step actually preserves the named cache and wipes the rest, under real bash")
+    func cleanupStepExecutesCorrectlyUnderBash() async throws {
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory.appendingPathComponent("graft-cleanup-test-\(UUID().uuidString)")
+        let home = tempRoot.appendingPathComponent("home")
+        let bin = tempRoot.appendingPathComponent("bin")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        // Seed ~/Library/Caches with one preserved dir and two that must be wiped —
+        // including one with a space, to prove the quoting fix actually holds under bash.
+        for sub in ["CocoaPods", "junk", "with space"] {
+            let dir = home.appendingPathComponent("Library/Caches/\(sub)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: dir.appendingPathComponent("x"))
+        }
+
+        // No-op `sudo`/`brew` shims ahead of the real ones on PATH: the cleanup step's
+        // `sudo rm -rf /Library/Caches/Homebrew/*` would otherwise either prompt for a
+        // password or (harmlessly, via `|| true`) fail — the shim keeps the test
+        // hermetic and fast either way.
+        for tool in ["sudo", "brew"] {
+            let shim = bin.appendingPathComponent(tool)
+            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: shim)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim.path)
+        }
+
+        let r = try JSONDecoder().decode(
+            ImageRecipe.self,
+            from: Data(#"{"name":"x","from":"b","run":[],"cleanup":true}"#.utf8)
+        )
+        let script = try #require(r.cleanupSteps.first)
+        let scriptFile = tempRoot.appendingPathComponent("cleanup.sh")
+        try Data(script.utf8).write(to: scriptFile)
+
+        let result = try await Shell.run(
+            "/bin/bash", ["-eo", "pipefail", scriptFile.path],
+            environment: [
+                "HOME": home.path,
+                "PATH": "\(bin.path):/usr/bin:/bin",
+            ],
+            timeout: .seconds(10)
+        )
+        #expect(result.succeeded)
+
+        #expect(fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/CocoaPods/x").path))
+        #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/junk").path))
+        #expect(!fm.fileExists(atPath: home.appendingPathComponent("Library/Caches/with space").path))
+    }
 }

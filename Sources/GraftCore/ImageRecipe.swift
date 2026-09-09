@@ -84,9 +84,86 @@ public struct ImageRecipe: Codable, Sendable {
         }
     }
 
+    /// `cleanup: true` (or `cleanup: { preserve: [...] }`) shrinks the image without undoing
+    /// the cache warming that is the point of it: only entries under `~/Library/Caches` that
+    /// are NOT in the preserve list are removed, so a warm CocoaPods/DerivedData/ccache/SPM/
+    /// yarn cache survives. `preserve` (paths relative to `$HOME`) appends to, not replaces,
+    /// ``CleanupConfig/defaultPreserve``.
+    public struct CleanupConfig: Codable, Sendable, Equatable {
+        /// Preserved by default, relative to `$HOME`. Most of these already live outside
+        /// `~/Library/Caches` (DerivedData, `.npm`, `.cocoapods`, …) so cleanup never touches
+        /// them; the `Library/Caches/...` entries are what the cache-wipe loop skips.
+        public static let defaultPreserve: [String] = [
+            "Library/Caches/CocoaPods",
+            "Library/Caches/ccache",
+            "Library/Developer/Xcode/DerivedData",
+            "Library/Caches/org.swift.swiftpm",
+            "Library/Caches/Yarn",
+            ".yarn/berry/cache",
+            ".npm",
+            ".cache/yarn",
+            ".cocoapods",
+        ]
+
+        public let isEnabled: Bool
+        public let preserve: [String]        // extra paths (relative to $HOME), appended to defaultPreserve
+
+        public var preservePaths: [String] { Self.defaultPreserve + preserve }
+
+        public init(enabled: Bool, preserve: [String] = []) {
+            self.isEnabled = enabled
+            self.preserve = preserve
+        }
+
+        enum CodingKeys: String, CodingKey { case preserve }
+
+        public init(from decoder: Decoder) throws {
+            if let flag = try? decoder.singleValueContainer().decode(Bool.self) {
+                isEnabled = flag
+                preserve = []
+                return
+            }
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            isEnabled = true
+            let raw = try c.decodeIfPresent([String].self, forKey: .preserve) ?? []
+            preserve = try raw.map { try Self.normalize($0, container: c) }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            // `enabled: false` always wins — a disabled cleanup makes the preserve list moot,
+            // and encoding the object form here would silently decode back as enabled.
+            if !isEnabled || preserve.isEmpty {
+                var sv = encoder.singleValueContainer()
+                try sv.encode(isEnabled)
+            } else {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(preserve, forKey: .preserve)
+            }
+        }
+
+        /// Strip a leading `~/`, `./`, or `$HOME/` so paths written either way normalise to
+        /// the same `Library/Caches/...` form the cleanup step matches against. An absolute
+        /// path can't be expressed relative to `$HOME`, so it's a decode-time error rather
+        /// than a silently-ignored (and silently-wiped) entry.
+        private static func normalize(_ path: String, container c: KeyedDecodingContainer<CodingKeys>) throws -> String {
+            var p = path
+            for prefix in ["~/", "./", "$HOME/"] where p.hasPrefix(prefix) {
+                p.removeFirst(prefix.count)
+                break
+            }
+            guard !p.hasPrefix("/") else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .preserve, in: c,
+                    debugDescription: "preserve paths are relative to $HOME (got absolute path \"\(path)\")"
+                )
+            }
+            return p
+        }
+    }
+
     // MARK: Image hygiene / verification
     public let verify: [String]?         // assertions — each must exit 0 or the build fails
-    public let cleanup: Bool?            // brew cleanup + clear caches (smaller image)
+    public let cleanup: CleanupConfig?   // brew cleanup + clear non-warm caches (smaller image)
 
     // MARK: VM shape (applied via `tart set`, not the guest shell)
     public let cpu: Int?                 // tart set --cpu
@@ -125,7 +202,7 @@ public struct ImageRecipe: Codable, Sendable {
         disableSpotlight: Bool? = nil, disableSleep: Bool? = nil,
         description: String? = nil, labels: [String: String]? = nil,
         podRepoWarm: Bool? = nil, prefetch: [String]? = nil, repos: [PrecacheRepo]? = nil,
-        verify: [String]? = nil, cleanup: Bool? = nil,
+        verify: [String]? = nil, cleanup: CleanupConfig? = nil,
         cpu: Int? = nil, memory: Int? = nil, disk: Int? = nil, display: String? = nil,
         run: [String] = [], script: String? = nil, mounts: [Mount]? = nil, os: GuestOS? = nil,
         network: VMNetwork? = nil
@@ -198,7 +275,7 @@ public struct ImageRecipe: Codable, Sendable {
         prefetch = try c.decodeIfPresent([String].self, forKey: .prefetch)
         repos = try c.decodeIfPresent([PrecacheRepo].self, forKey: .repos)
         verify = try c.decodeIfPresent([String].self, forKey: .verify)
-        cleanup = try c.decodeIfPresent(Bool.self, forKey: .cleanup)
+        cleanup = try c.decodeIfPresent(CleanupConfig.self, forKey: .cleanup)
         cpu = try c.decodeIfPresent(Int.self, forKey: .cpu)
         memory = try c.decodeIfPresent(Int.self, forKey: .memory)
         disk = try c.decodeIfPresent(Int.self, forKey: .disk)
@@ -539,12 +616,31 @@ public struct ImageRecipe: Codable, Sendable {
     }
 
     var cleanupSteps: [String] {
-        guard cleanup == true else { return [] }
+        guard let cleanup, cleanup.isEnabled else { return [] }
+        // Only the direct children of ~/Library/Caches are ever touched, so a preserved path
+        // that lives elsewhere (DerivedData, .npm, .cocoapods, ...) is already safe by
+        // construction — the case pattern below only needs the Library/Caches basenames.
+        let cacheBasenames = cleanup.preservePaths.compactMap { path -> String? in
+            guard path.hasPrefix("Library/Caches/") else { return nil }
+            return path.dropFirst("Library/Caches/".count).split(separator: "/").first.map(String.init)
+        }
+        // Each alternative is single-quoted so the case match is an exact literal — a
+        // basename with a space, `(`, `)`, `;`, a quote, or a glob character can't break
+        // the script or silently widen the match.
+        let quotedBasenames = Array(Set(cacheBasenames)).sorted().map(Self.shq)
+        let pattern = quotedBasenames.isEmpty ? "''" : quotedBasenames.joined(separator: "|")
+        let preservedList = cleanup.preservePaths.sorted().joined(separator: ", ")
         return ["""
-            echo "==> Cleanup (shrinking image)"
+            echo \(Self.shq("==> Cleanup (shrinking image, preserving warm caches: \(preservedList))"))
             brew cleanup -s 2>/dev/null || true
-            rm -rf ~/Library/Caches/* 2>/dev/null || true
             sudo rm -rf /Library/Caches/Homebrew/* 2>/dev/null || true
+            for entry in "$HOME"/Library/Caches/*; do
+              [ -e "$entry" ] || continue
+              case "$(basename "$entry")" in
+                \(pattern)) continue ;;
+              esac
+              rm -rf "$entry" 2>/dev/null || true
+            done
             """]
     }
 
@@ -718,8 +814,7 @@ public struct ImageRecipe: Codable, Sendable {
         # Clone a repo just to warm the global package caches, then discard the source —
         # so a runner's first `yarn/pod install` hits a warm cache. A private github.com
         # repo authenticates automatically as graft's GitHub App (no deploy key); add an
-        # explicit `ssh-key:` to override. NOTE: don't pair with `cleanup: true` below —
-        # cleanup clears ~/Library/Caches, wiping Yarn/CocoaPods/SPM warmth.
+        # explicit `ssh-key:` to override.
         # repos:
         #   - url: https://github.com/me/app.git
         #     ref: main
@@ -729,7 +824,8 @@ public struct ImageRecipe: Codable, Sendable {
         verify:
           - node --version
           - pod --version
-        cleanup: true              # brew cleanup + clear caches → smaller image
+        cleanup: true              # brew cleanup + shrink image — preserves warm caches
+                                    # (CocoaPods, DerivedData, ccache, SPM, yarn/npm)
 
         # Escape hatch — raw bash for anything not covered (runs last):
         # run: |

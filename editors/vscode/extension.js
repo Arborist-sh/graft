@@ -42,7 +42,7 @@ const FIELDS = {
 
   // ── Verify + hygiene ──
   verify: { detail: "string[]", doc: "Assertions run at the end — each must exit 0 or the build fails.", insert: "verify: [$0]" },
-  cleanup: { detail: "boolean", doc: "`brew cleanup` + clear caches at the end → smaller image to clone.", insert: "cleanup: true" },
+  cleanup: { detail: "boolean | { preserve }", doc: "`brew cleanup` + clear non-warm caches at the end → smaller image to clone. `true` preserves a default list of warm build caches (CocoaPods, ccache, DerivedData, SPM, Yarn/npm); use `cleanup: { preserve: [...] }` to add your own paths (relative to $HOME).", insert: "cleanup: true" },
 
   // ── VM shape (applied via `tart set`) ──
   cpu: { detail: "int", doc: "CPU count for the baked image → `tart set --cpu`.", insert: "cpu: $0" },
