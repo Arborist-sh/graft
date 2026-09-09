@@ -188,8 +188,7 @@ When enabled, graft (after `brew:` packages install):
   actual compiler, not its mtime/path). `compression = false` trades a little disk for
   removing the only compute cost a cache *hit* has — and disk is cheap on an APFS clone.
   `cache_dir` is pinned to `~/Library/Caches/ccache` so the store's location is
-  deterministic (don't pair `ccache:` with `cleanup: true`, which clears
-  `~/Library/Caches` — same caveat as `repos:`/CocoaPods/Yarn caches above).
+  deterministic, and `cleanup: true` preserves it (see the cleanup preserve list, GFT-35).
 
 - at the end of the `prefetch`/`repos` phase — after a warm `pod install && xcodebuild`
   would have filled the store — runs `ccache -s` so the bake log shows the fill.
