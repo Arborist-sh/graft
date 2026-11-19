@@ -1,12 +1,12 @@
 # Example image recipes
 
-Starting points for `graft image build` — generic, meant to be adapted. Pin the
+Starting points for `graft sapling grow` — generic, meant to be adapted. Pin the
 versions to match your project's lockfiles ("works in CI, fails locally" is almost
 always version drift).
 
 A recipe is a **`.graft`** file (YAML with declarative toolchain fields), or plain
 `.yml`/`.json`. The declarative fields expand into the right provisioning commands —
-preview what a recipe compiles to with `graft image render -f <recipe>`.
+preview what a recipe compiles to with `graft sapling render --seed <recipe>`.
 
 | Recipe | Base | For |
 |--------|------|-----|
@@ -17,9 +17,9 @@ preview what a recipe compiles to with `graft image render -f <recipe>`.
 | [`script-based/`](script-based/) | `macos-tahoe-xcode` | Point at an existing `provision.sh` |
 
 ```sh
-graft image render -f examples/images/rn-detox.graft   # see the compiled script
-graft image build  -f examples/images/rn-detox.graft   # build it
-graft dev --image rn-detox                             # shell in, your repo mounted
+graft sapling render --seed examples/images/rn-detox.graft   # see the compiled script
+graft sapling grow --seed examples/images/rn-detox.graft   # build it
+graft nest --image rn-detox                             # shell in, your repo mounted
 ```
 
 ## Declarative fields
@@ -43,5 +43,5 @@ Notes:
   On a bare `*-base` image, install them yourself via `run:` (see `node-ci.json`).
 - For caching strategy (bake vs. mount, APFS copy-on-write, the read-only rule for
   shared caches), see [../../docs/images-and-caching.md](../../docs/images-and-caching.md).
-- Keep images that contain proprietary code **private** — don't `graft image push` them
+- Keep images that contain proprietary code **private** — don't `graft sapling push` them
   to a public registry.

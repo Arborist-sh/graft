@@ -22,7 +22,7 @@ Three roles, loosely coupled — and that coupling is the whole point:
 - **graft is _demand_.** Its job is a desired-state loop: "keep `count` runners alive,
   forever." It just keeps asking the controller for VMs — it never checks how much room
   the fleet has.
-- **Workers are _supply_.** A worker (`orchard worker run`) registers with the
+- **Workers are _supply_.** A worker (`graft branch`) registers with the
   controller and idles, advertising its free slots. **It never spins up a VM on its own.**
 - **The controller is the _matchmaker_.** It places each of graft's "I need a VM"
   requests onto a worker with a free slot (respecting each host's 2-macOS-VM cap + labels).
@@ -69,32 +69,32 @@ JIT token travels outward, into a VM that's destroyed after one job.
 
 You don't have to leave the graft CLI to run a fleet — graft models it as a **tree**: a
 **trunk** (the controller) with **branches** (workers) that your **leaves** (runner VMs)
-grow on. `graft tree …` wraps the whole lifecycle (it shells out to `orchard` underneath;
+grow on. `graft plant`, `graft branch` and `graft prune` wrap the whole lifecycle (it shells out to `orchard` underneath;
 the vendor name only appears in `provider: "orchard"` config):
 
 | Command | What it does |
 |---|---|
-| `graft tree plant` | Plant the trunk — run the controller (foreground), capturing the one-time admin token so `branch`/`prune` can authenticate. |
-| `graft tree branch <trunk-url>` | Graft a branch on — run a worker on this Mac that joins the tree (mints its own bootstrap token, or pass `--token`). |
-| `graft tree prune <name>` | Prune a branch — deregister a worker. |
-| `graft tree status` | Tree health — trunk, branch count, advertised/used/free capacity, graft's leaves. |
-| `graft tree branches` | Per-branch table (advertised leaf slots, paused state) + the tree's free-slot total. |
-| `graft tree leaves [--all]` | Leaves (VMs) on the tree — graft's by default, the whole cluster with `--all`. |
+| `graft plant` | Plant the trunk — run the controller (foreground), capturing the one-time admin token so `branch`/`prune` can authenticate. |
+| `graft branch <trunk-url>` | Graft a branch on — run a worker on this Mac that joins the tree (mints its own bootstrap token, or pass `--token`). |
+| `graft prune <name>` | Prune a branch — deregister a worker. |
+| `graft arborist canopy` | Tree health — trunk, branch count, advertised/used/free capacity, graft's leaves. |
+| `graft arborist branches` | Per-branch table (advertised leaf slots, paused state) + the tree's free-slot total. |
+| `graft arborist leaves [--all]` | Leaves (VMs) on the tree — graft's by default, the whole cluster with `--all`. |
 
 Setup happens in **`graft init`** — it asks the backend (Local Tart · Orchard tree) and,
 for a tree, collects the trunk URL + service account and stashes the token in the
 Keychain. A local fleet, end to end:
 
 ```sh
-graft tree plant                       # terminal 1: the trunk (leave running)
-graft tree branch http://localhost:6120  # terminal 2: graft a branch on (leave running)
+graft plant                       # terminal 1: the trunk (leave running)
+graft branch http://localhost:6120  # terminal 2: graft a branch on (leave running)
 graft init                             # terminal 3: pick "Orchard tree", point at the trunk
-graft tree status                      # sanity-check
-graft run                              # graft leaves onto the branches
+graft arborist canopy                      # sanity-check
+graft arborist tend                    # graft leaves onto the branches
 ```
 
 The service-account **token is stored in the Keychain** (keyed by account name, same
-mechanism as the GitHub App PEM), so it never lands in profile JSON. `graft run` resolves
+mechanism as the GitHub App PEM), so it never lands in profile JSON. `graft arborist tend` resolves
 it at start: an inline provider `token` wins if present, otherwise the Keychain, otherwise
 empty (fine for an unsecured local trunk). For a *remote* secured controller, `graft init`
 creates the service account for you when you hold an admin `orchard` context — otherwise
@@ -106,7 +106,7 @@ it falls back to pasting an existing token.
 
 graft shells out to the `orchard` CLI (just like the local backend shells out to
 `tart`), so the [`orchard` binary](https://tart.run/orchard/quick-start/) must be on
-the `PATH` of the machine running `graft run`:
+the `PATH` of the machine running `graft arborist tend`:
 
 ```sh
 brew install cirruslabs/cli/orchard
@@ -139,12 +139,12 @@ find and delete its own VMs without touching anything else on the cluster.
 
 ## Setup
 
-For a single-machine smoke test, skip all of this: **`graft tree plant`** + **`graft tree branch http://localhost:6120`** then **`graft init`** (see [Driving Orchard from graft](#driving-orchard-from-graft))
+For a single-machine smoke test, skip all of this: **`graft plant`** + **`graft branch http://localhost:6120`** then **`graft init`** (see [Driving Orchard from graft](#driving-orchard-from-graft))
 gives you a local fleet with zero hand-editing. For a real fleet:
 
 ### 1. Stand up the controller
 Run `orchard controller run` on a host reachable from your Macs and from wherever
-`graft run` lives (it can be a Linux box — the controller only schedules and holds
+`graft arborist tend` lives (it can be a Linux box — the controller only schedules and holds
 state). Add TLS + auth per the
 [Orchard deployment guide](https://tart.run/orchard/deploying-controller/).
 
@@ -168,8 +168,8 @@ A fleet uses two, with different roles:
 ### 3. Join each Mac as a worker
 On every Apple Silicon Mac that will boot VMs:
 ```sh
-orchard worker run https://orchard.example.com:6120 \
-  --bootstrap-token <token> \
+graft branch https://orchard.example.com:6120 \
+  --token <token> \
   --name mac-studio-1 \
   --labels hardware=m4max        # optional — pools can require labels to target hardware
 ```
@@ -208,7 +208,7 @@ here's what it produces — note there's **no `token` field**, it's Keychain-bac
 Validate and run:
 ```sh
 graft config validate
-graft run
+graft arborist tend
 ```
 
 ## Capacity & scheduling
@@ -244,7 +244,7 @@ fleet or churn create→pending→timeout→delete. Set `count` to the runners y
   *if-not-present*), so graft skips the local pre-pull it does for the Tart backend.
   Push your `.graft`-built images to a registry the workers can reach.
 - **Mounts:** a pool's `mounts` become `orchard create vm --host-dirs …`. Note these
-  resolve on the **worker** host, not on the machine running `graft run` — only
+  resolve on the **worker** host, not on the machine running `graft arborist tend` — only
   useful for paths that exist on the workers.
 - **Networking:** a pool's `network` maps to `--net-bridged <iface>` / `--net-softnet`
   on the worker, same as the local backend.

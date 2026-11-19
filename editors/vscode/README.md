@@ -4,7 +4,7 @@
 
 Editor support for **`.graft`** image recipes (and `Graftfile`) — the declarative recipes
 behind [Graft](https://github.com/arborist-sh/graft), which builds golden Tart VM images
-for macOS & Linux dev environments and ephemeral CI runners.
+for macOS dev environments and ephemeral CI runners.
 
 - **Syntax highlighting** — graft keywords colored, and the bash inside `run: |` /
   `script: |` blocks highlighted as shell (the pretty part).
@@ -12,7 +12,7 @@ for macOS & Linux dev environments and ephemeral CI runners.
   `brew`, `xcode-first-launch`, …) with docs on what each compiles to.
 - **Snippets** — `graft`, `graft-rn`, `graft-ios` scaffold a recipe.
 - **Commands** — `Graft: Render compiled provisioning script` (an eye icon in the editor
-  title bar) and `Graft: Build image from this recipe`. Both shell out to the `graft`
+  title bar) and `Graft: Grow sapling from this recipe`. Both shell out to the `graft`
   CLI on your PATH.
 - **File icon** — `.graft` files get the Graft mark in icon themes that support language
   icons (e.g. Seti, the default).
@@ -33,11 +33,11 @@ Development Host, or package a `.vsix` yourself:
 ```sh
 cd editors/vscode
 npx @vscode/vsce package
-code --install-extension dotgraft-0.1.0.vsix
+code --install-extension dotgraft-0.1.1.vsix
 ```
 
 ## Notes
 
-- The render/build commands run `graft image render|build -f <file>`. Make sure `graft`
+- The render/build commands run `graft sapling render --seed <file>` and `graft sapling grow --seed <file>`. Make sure `graft`
   (or a symlink to your dev build) is on the PATH the integrated terminal uses.
 - No build step — the extension is plain JS + declarative contributions.

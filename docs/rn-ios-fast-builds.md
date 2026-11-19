@@ -11,7 +11,7 @@ Recipe: [`examples/images/rn-ios.graft`](../examples/images/rn-ios.graft). Backg
 
 ## Where the time goes
 
-Rough ranges for a mid-size RN iOS job, cold (stock runner) vs. warm (graft image):
+Rough ranges for a mid-size RN iOS job, cold (stock runner) vs. warm (graft sapling):
 
 | Phase | Cold | Warm |
 |---|---|---|
@@ -159,7 +159,7 @@ end
 ## Tradeoffs and gotchas
 
 - **Source is baked into the image.** `path:` keeps the app's tree in the image, not
-  just its caches — keep the image private, never `graft image push` it to a public
+  just its caches — keep the image private, never `graft sapling push` it to a public
   registry.
 - **`clean: false` means the job trusts the baked tree.** This is safe: `actions/checkout`
   still does a `git fetch` + `git reset --hard` on top of it (that's the checkout, not the

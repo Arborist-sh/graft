@@ -78,7 +78,7 @@ If you get an IP here, the hard part is done.
 ### 7. Run graft, kept awake so the session never sleeps
 
 ```sh
-caffeinate -dimsu graft run
+caffeinate -dimsu graft arborist tend --foreground
 ```
 
 ---
@@ -101,7 +101,7 @@ The SSH process isn't seeing the session — run *inside* it via `launchctl asus
 ```sh
 sudo launchctl asuser "$(id -u ec2-user)" sudo -u ec2-user tart run iptest --no-graphics &
 # and run graft the same way:
-sudo launchctl asuser "$(id -u ec2-user)" sudo -u ec2-user caffeinate -dimsu graft run
+sudo launchctl asuser "$(id -u ec2-user)" sudo -u ec2-user caffeinate -dimsu graft arborist tend --foreground
 ```
 
 **Leftover VMs blocking the 2-macOS-VM limit.**

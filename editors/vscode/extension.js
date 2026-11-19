@@ -96,7 +96,8 @@ function activate(context) {
   );
 }
 
-// Save the file, then shell out to `graft image <sub> -f <file>` in a terminal.
+// Save the file, then shell out to `graft sapling render|grow --seed <file>` in a terminal.
+// `sub` is the command id suffix (render | build); build maps to `sapling grow`.
 function runGraft(sub) {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== "graft") {
@@ -106,7 +107,8 @@ function runGraft(sub) {
   editor.document.save().then(() => {
     const term = vscode.window.createTerminal("graft");
     term.show();
-    term.sendText(`graft image ${sub} -f "${editor.document.fileName}"`);
+    const verb = sub === "build" ? "grow" : "render";
+    term.sendText(`graft sapling ${verb} --seed "${editor.document.fileName}"`);
   });
 }
 
