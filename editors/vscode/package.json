@@ -1,8 +1,8 @@
 {
   "name": "graftfile",
   "displayName": "Graftfile",
-  "description": "Syntax highlighting, snippets, schema, and helpers for .graft image recipes.",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, snippets, schema, and helpers for .graft recipes.",
+  "version": "0.1.1",
   "publisher": "arborist-sh",
   "license": "MIT",
   "icon": "icon.png",
@@ -49,7 +49,7 @@
       },
       {
         "command": "graft.build",
-        "title": "Graft: Build image from this recipe"
+        "title": "Graft: Grow sapling from this recipe"
       }
     ],
     "menus": {

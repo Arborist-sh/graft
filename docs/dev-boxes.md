@@ -1,16 +1,16 @@
-# Dev boxes (`graft dev`)
+# Dev boxes (`graft nest`)
 
 A **dev box** is a VM cloned from one of your golden images — the same image your CI
 runners use. You get a disposable-or-persistent Mac dev environment with the full
 toolchain already baked in, and the host stays a thin client.
 
 ```sh
-graft dev                      # picker: resume a box / clone a repo / mount here / scratch
-graft dev briancorbin/app      # clone a repo into a persistent box and open it
-graft dev app                  # resume the persistent box 'app'
-graft dev .                    # mount the current directory into an ephemeral box
-graft dev ls                   # list dev boxes
-graft dev rm [box]             # remove a box (picker if omitted)
+graft nest                      # picker: resume a box / clone a repo / mount here / scratch
+graft nest briancorbin/app      # clone a repo into a persistent box and open it
+graft nest app                  # resume the persistent box 'app'
+graft nest .                    # mount the current directory into an ephemeral box
+graft nest ls                   # list dev boxes
+graft nest rm [box]             # remove a box (picker if omitted)
 ```
 
 ## The model: clone is persistent, mount is ephemeral
@@ -42,13 +42,13 @@ the box, so the editor, terminal, language servers, and builds all run guest-sid
 the baked toolchain. The interactive picker asks which you want.
 
 ```sh
-graft dev briancorbin/app --code     # clone + open VS Code
-graft dev app                        # resume into a shell
-graft dev . -- yarn test             # mount $PWD, run one command, tear down
+graft nest briancorbin/app --code     # clone + open VS Code
+graft nest app                        # resume into a shell
+graft nest . -- yarn test             # mount $PWD, run one command, tear down
 ```
 
 > `--code` boxes are always left running (VS Code can't tell graft when you've closed the
-> window). Remove with `graft dev rm <box>`.
+> window). Remove with `graft nest rm <box>`.
 
 ### VS Code prerequisites
 - The `code` CLI on your PATH (VS Code → ⌘⇧P → "Shell Command: Install 'code' command").

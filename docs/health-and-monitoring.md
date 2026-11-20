@@ -1,56 +1,59 @@
 # Health & monitoring
 
-`graft arborist --tend` is graft's **self-monitoring loop** — a continuous tending pass
+The health monitor (`--monitor` on `graft arborist tend`) is graft's **self-monitoring loop** — a continuous tending pass
 that watches a running fleet and reports what's wrong. It is **detection-first**: it
 observes, classifies, and ships findings to wherever you want them. It does **not**
 remediate anything (yet) — see [the self-healing seam](#the-self-healing-seam).
 
-The one-shot `graft arborist` verifies the GitHub App auth chain once and exits.
-`--tend` keeps the doctor in the room: it runs the auth check *plus* four more detectors
+The one-shot `graft arborist check` verifies the GitHub App auth chain once and exits.
+`--monitor` keeps the doctor in the room: it runs the auth check *plus* four more detectors
 on a cadence, forever.
 
 ```sh
-graft arborist --tend                 # tend the active profile, default 60s sweeps
-graft arborist --tend --interval 30   # faster cadence
-graft arborist --tend --profile work  # a specific profile
+graft arborist tend --monitor                 # tend the active profile and report health
+graft arborist tend --monitor --profile work  # a specific profile
+graft plant --monitor                         # controller host vitals
+graft branch <trunk-url> --monitor            # worker host vitals
 ```
+
+Sweep cadence defaults to 60s and is set by `monitor.intervalSeconds` in the profile
+(see [Config](#config)); there is no CLI flag for the interval.
 
 It runs against the active profile's pools. Stop it with Ctrl-C.
 
 ## Where to run it
 
-The monitor belongs with the **supervisor** — the host where `graft run` lives (it holds
+The monitor belongs with the **supervisor** — the host where `tend` lives (it holds
 the GitHub App key and writes `~/.graft/state`). Note this is *not* the trunk/controller
-(`graft tree plant`): on a real Orchard fleet the controller can be a separate Linux box
+(`graft plant`): on a real Orchard fleet the controller can be a separate Linux box
 with no key and no supervisor state. The monitor watches the controller + workers
 *remotely* through the Orchard API. Two ways to run it:
 
-- **`graft run --tend`** (recommended) — fold the monitor into the supervisor, in the same
+- **`graft arborist tend --monitor`** (recommended) — fold the monitor into the supervisor, in the same
   process. It's unambiguously the trunk, shares the live state, and "run it next to your
   runners" is one flag. This is how you'd run it on a server — under launchd/systemd, same
-  as `graft run --daemon`.
-- **`graft arborist --tend`** — a standalone monitor. On the trunk it sees everything; run
-  it anywhere else (e.g. a laptop pointed at the Orchard controller) and it drops to
-  **observer mode** — auth + runner + capacity only — so the state-backed checks can't
-  false-fire on an empty local state.
+  as `graft arborist tend --daemon`.
+- **`graft arborist tend --monitor` on another machine** (e.g. a laptop pointed at the
+  Orchard controller) — it only has the remote view: auth + runner + capacity, with no
+  local supervisor state, so the state-backed checks can't fire.
 
 ### Each role tends itself
 
-A full Orchard fleet runs three long-running graft processes, and **each has its own
-`--tend`** — same event schema and sinks, but detectors matched to what that host can
+A full Orchard fleet runs three long-running graft processes, and **each takes its own
+`--monitor`** — same event schema and sinks, but detectors matched to what that host can
 actually see:
 
-| Process | Vantage | `--tend` detectors |
+| Process | Vantage | `--monitor` detectors |
 |---|---|---|
-| `graft run` | supervisor / demand | auth · runner · capacity · wedged-slot · deadwood |
-| `graft tree branch` | worker host | disk · memory · `tart` health · stranded VMs |
-| `graft tree plant` | controller host | disk · memory · controller-responding |
+| `graft arborist tend` | supervisor / demand | auth · runner · capacity · wedged-slot · deadwood |
+| `graft branch` | worker host | disk · memory · `tart` health · stranded VMs |
+| `graft plant` | controller host | disk · memory · controller-responding |
 
 The supervisor sees a worker is *paused* (the symptom) through the controller API; the
 branch agent, running *on* that Mac, sees *why* — its disk is full — ideally first. The
 worker and controller agents carry **no GitHub creds** (host probes only), so the "worker
 holds no secret" property is preserved. All three emit the same `HealthEvent` to the same
-JSONL/webhook → one dashboard. (For local Tart there's just the one process, `graft run --tend`.)
+JSONL/webhook → one dashboard. (For local Tart there's just the one process, `graft arborist tend --monitor`.)
 
 ## What it watches
 
@@ -108,7 +111,7 @@ now* (a `warn`/`critical` upserts by key; a `recovered` clears it).
   "subject": "graft-9f2a…",
   "message": "graft runner registered but offline on org:acme — likely a missed deregistration",
   "detail": { "target": "org:acme", "runnerId": "42", "status": "offline" },
-  "suggestedAction": "deregister it (`graft runners prune`) so the slot can replace it"
+  "suggestedAction": "deregister it (`graft arborist runners prune`) so the slot can replace it"
 }
 ```
 
@@ -181,7 +184,7 @@ sits at the top level of a profile, alongside `provider`/`github`/`pools`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `intervalSeconds` | 60 | seconds between sweeps (CLI `--interval` overrides) |
+| `intervalSeconds` | 60 | seconds between sweeps |
 | `webhooks` | `[]` | URLs each event is POSTed to |
 | `heartbeatSeconds` | 300 | min spacing of the `info` heartbeat; `0` disables |
 | `slotStuckTimeoutSeconds` | 300 | a transient-phase slot older than this is flagged |
@@ -193,6 +196,6 @@ Remediation is the *next* layer, deliberately not built yet — you trust detect
 wild first, then flip on healers one at a time. The seam is published:
 [`Remediator`](../Sources/GraftCore/Remediator.swift) is a protocol that consumes the same
 `HealthEvent` stream the sinks already carry, reads `suggestedAction`, and dispatches on
-`category` + `checkID`. When it lands it will be opt-in (a future `--tend --heal`),
+`category` + `checkID`. When it lands it will be opt-in (a future `--monitor --heal`),
 guarded by backoff + a circuit breaker so it absorbs failures instead of amplifying them —
 never on by default.

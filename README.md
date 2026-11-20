@@ -46,7 +46,7 @@ multi-host fleets and a shared dev/CI image.
 | Pool supervisor + state + daemon | ✅ built & unit-tested |
 | Image builder + `graft nest` + `.graft` recipes | ✅ built & tested (real image baked end-to-end) |
 | Orchard multi-host backend | ✅ verified end-to-end against a live controller — [docs/orchard.md](docs/orchard.md) |
-| Health monitor (`--tend` on run / tree branch / tree plant) | ✅ built & unit-tested — detection-only, per-role agents, [docs/health-and-monitoring.md](docs/health-and-monitoring.md) |
+| Health monitor (`--monitor` on `arborist tend` / `branch` / `plant`) | ✅ built & unit-tested — detection-only, per-role agents, [docs/health-and-monitoring.md](docs/health-and-monitoring.md) |
 | **Linux guests** | 📋 **planned (future epic)** — the OS-aware plumbing exists (runner arch, capacity, Orchard `--os linux`), but it's **unproven and has known gaps** (local `tart exec` is macOS-guest only; runner deps + run-as-root aren't handled; image builder is macOS-only). **macOS is the supported target.** |
 
 Built and driven through end-to-end **on macOS**; the parts that need real GitHub
@@ -99,8 +99,8 @@ or a path), so there's no global flag to remember at run time — `graft init` s
 ### 3. Configure
 
 ```sh
-graft config template > ~/.graft/config.json
-graft config validate
+graft config template > ~/.graft/profiles/default.json
+graft config validate --config ~/.graft/profiles/default.json
 ```
 
 ```json
@@ -190,8 +190,8 @@ graft leaf create <image> [--os macos|linux]   Clone + boot a VM (leaf), print n
 graft leaf rm <name>                    Stop + destroy a leaf (VM)
 graft leaf list [--all]                 List graft-managed (or all) leaves
 graft leaf ip <name> [--wait]           Print a leaf's IP
-graft runners list [--profile NAME]     List graft's runner registrations on GitHub
-graft runners prune [--profile NAME]    Delete offline graft runner husks on GitHub
+graft arborist runners list [--profile NAME]     List graft's runner registrations on GitHub
+graft arborist runners prune [--profile NAME]    Delete offline graft runner husks on GitHub
 graft secrets import --app-id N --pem P [--keychain PATH]   (default: login keychain)
 graft secrets list [--keychain PATH]
 graft secrets rm --app-id N [--keychain PATH]
@@ -293,7 +293,7 @@ passwords. Stock cirruslabs images ship the agent; custom images must include it
 - **[docs/images-and-caching.md](docs/images-and-caching.md)** — `.graft` recipes, the full field reference, CoW caching
 - **[docs/rn-ios-fast-builds.md](docs/rn-ios-fast-builds.md)** — React Native iOS fast-build recipe + workflow (baked workspace, ccache)
 - **[docs/orchard.md](docs/orchard.md)** — the multi-host Orchard backend: controller/workers, service account, config
-- **[docs/health-and-monitoring.md](docs/health-and-monitoring.md)** — `arborist --tend`: detectors, event schema, webhooks, the self-healing seam
+- **[docs/health-and-monitoring.md](docs/health-and-monitoring.md)** — `--monitor`: detectors, event schema, webhooks, the self-healing seam
 - **[docs/ec2-mac-setup.md](docs/ec2-mac-setup.md)** — headless / EC2 Mac runners (auto-login, bridged networking)
 - **[editors/vscode/](editors/vscode/)** — the `.graft` VS Code extension
 
@@ -321,7 +321,7 @@ Menu-bar app (installs the CLI too):
 brew install --cask arborist-sh/tap/graft-app
 ```
 
-Apple Silicon only. [Tart](https://tart.run) is pulled in as a dependency.
+Apple Silicon only. Install [Tart](https://tart.run) first (`brew install cirruslabs/cli/tart`); graft does not install it for you.
 
 ## License
 

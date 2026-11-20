@@ -1,7 +1,7 @@
 # Images & caching
 
 Graft builds **golden images** (a base + your toolchain + warm caches baked in) and
-clones them for both CI runners and `graft dev`. The same image on your laptop and
+clones them for both CI runners and `graft nest`. The same image on your laptop and
 your runners means "works on my machine" stops being a thing.
 
 ## Build an image
@@ -27,9 +27,9 @@ warm-simulators: ["iPhone 17 Pro"]
 ```
 
 ```sh
-graft image render -f image.graft   # preview the compiled provisioning script
-graft image build  -f image.graft   # clone → boot → provision in-guest → snapshot
-graft image push rn-detox ghcr.io/you/rn-detox:latest   # share with the team
+graft sapling render --seed image.graft   # preview the compiled provisioning script
+graft sapling grow --seed image.graft   # clone → boot → provision in-guest → snapshot
+graft sapling push rn-detox ghcr.io/you/rn-detox:latest   # share with the team
 ```
 
 `from` is any Tart ref (start from a `cirruslabs/*-xcode` base — Xcode + simulators are
@@ -40,14 +40,14 @@ disk is baked into the image. `mounts` (optional) expose host dirs during the bu
 e.g. to warm a project's caches. See [examples/images/](../examples/images/) for the
 full field reference.
 
-Reference the image from a pool (`"image": "rn-detox"`) or `graft dev --image
+Reference the image from a pool (`"image": "rn-detox"`) or `graft nest --image
 rn-detox`.
 
 ### Recipe field reference
 
 Everything runs in **one guest shell**, in this order:
 `env → toolchain → system config → script → run → prefetch → verify → cleanup`.
-VM-shape fields are applied to the finished image with `tart set`. Run `graft image
+VM-shape fields are applied to the finished image with `tart set`. Run `graft sapling
 template` for a starter, or hover any field in the VS Code extension.
 
 **Toolchain** (installed in this order — version managers are installed if missing):
@@ -126,7 +126,7 @@ Only the first path component under `Library/Caches` is ever matched, so a neste
 > **Networking behind a corporate proxy (Zscaler etc.):** the default shared NAT can be
 > blocked or mangled. Set `network: bridged:en0` (your active interface — `tart run
 > --net-bridged=list` lists them) to put the VM directly on the LAN. The same applies to
-> a runner pool (`network: bridged:en0` in the pool config) and `graft dev --network
+> a runner pool (`network: bridged:en0` in the pool config) and `graft nest --network
 > bridged:en0`.
 
 ### Pre-caching repos (`repos:`) — warm caches, no workflow changes
@@ -379,9 +379,9 @@ dir). So:
 For most setups: **bake into the image (CoW gives you a private writable copy for
 free), and use RO mounts only for the volatile long-tail.**
 
-## `graft dev` vs CI
+## `graft nest` vs CI
 
-| | `graft dev` | CI (`graft run`) |
+| | `graft nest` | CI (`graft arborist tend`) |
 |---|---|---|
 | VM | persistent (or `--ephemeral`) | always ephemeral |
 | repo | host-mounted RW (`$PWD`) | cloned into the guest |
